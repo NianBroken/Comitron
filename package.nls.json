@@ -1,0 +1,56 @@
+{
+  "extension.description": "在 VSCode 的源代码管理面板中生成候选 Commit Message，并把选中内容写入提交输入框。",
+  "command.generate.title": "AI生成",
+  "view.candidates.name": "Commit 候选项",
+  "config.title": "Comitron",
+
+  "config.selectedTool.title": "AI 工具",
+  "config.selectedTool.description": "自动读取 ClaudeCode、Codex、Gemini CLI，默认优先选择 Codex，都没有时默认自定义。",
+  "config.selectedTool.markdownDescription": "自动读取以下工具：\n\n`ClaudeCode`\n`Codex`\n`Gemini CLI`\n\n默认优先选择 `Codex`；都没有时默认 `自定义`。",
+
+  "config.detectedTools.title": "已读取工具列表",
+  "config.detectedTools.description": "显示当前自动读取到的工具和路径，仅用于查看结果。",
+  "config.detectedTools.markdownDescription": "显示当前自动读取到的工具和路径，仅用于查看结果。",
+
+  "config.toolPath.title": "Tool Path",
+  "config.toolPath.description": "选择已读取工具时会自动填入路径；选择自定义时会清空。示例值见下方。",
+  "config.toolPath.markdownDescription": "选择已读取工具时会自动填入路径；选择 `自定义` 时会清空。\n\n示例值：`D:\\nodejs\\node_global\\codex`",
+
+  "config.apiServiceJson.title": "API 服务 JSON",
+  "config.apiServiceJson.description": "仅在选择 API服务 时生效，固定键为 API地址、API密钥、模型ID、自定义参数。",
+  "config.apiServiceJson.markdownDescription": "仅在选择 `API服务` 时生效。\n\n固定键：\n`API地址`\n`API密钥`\n`模型ID`\n`自定义参数`\n\n`自定义参数` 用于填写温度等额外参数。",
+
+  "config.promptTemplate.title": "Prompt",
+  "config.promptTemplate.description": "主 Prompt，可直接修改。请保留变量原样，变量说明见下方。",
+  "config.promptTemplate.markdownDescription": "主 Prompt，可直接修改。请保留变量原样。\n\n变量：\n\n`{{commitLanguage}}`：填入当前 Commit Message 的生成语言；\n\n`{{extendedDescriptionInstruction}}`：按 Commit 描述开关填入对应生成要求；\n\n`{{changedFiles}}`：填入当前仓库所有已更改文件的内容与差异。",
+
+  "config.extendedDescriptionEnabledPrompt.title": "开启 Commit 描述时的 Prompt",
+  "config.extendedDescriptionEnabledPrompt.description": "开启 Commit 描述时使用，会替换 {{extendedDescriptionInstruction}}。",
+  "config.extendedDescriptionEnabledPrompt.markdownDescription": "开启 `Commit 描述` 时使用，会替换 `{{extendedDescriptionInstruction}}`。",
+
+  "config.extendedDescriptionDisabledPrompt.title": "关闭 Commit 描述时的 Prompt",
+  "config.extendedDescriptionDisabledPrompt.description": "关闭 Commit 描述时使用，会替换 {{extendedDescriptionInstruction}}。",
+  "config.extendedDescriptionDisabledPrompt.markdownDescription": "关闭 `Commit 描述` 时使用，会替换 `{{extendedDescriptionInstruction}}`。",
+
+  "config.toolResponsePromptTemplate.title": "工具响应 Prompt",
+  "config.toolResponsePromptTemplate.description": "所有 AI 的补充 Prompt，建议保留只输出 JSON 的要求。",
+  "config.toolResponsePromptTemplate.markdownDescription": "所有 AI 的补充 Prompt。建议保留“只输出 JSON”的要求。",
+
+  "config.commitLanguage.title": "Commit Language",
+  "config.commitLanguage.description": "Commit Message 生成语言。示例值：简体中文、English",
+  "config.commitLanguage.markdownDescription": "Commit Message 生成语言。\n\n示例值：`简体中文`、`English`",
+
+  "config.contextBudget.title": "Context Budget",
+  "config.contextBudget.description": "控制最终发送给 AI 的差异上下文最大长度。插件会在不超过该值的前提下尽量接近该值，并且只保留完整文件差异。",
+  "config.contextBudget.markdownDescription": "控制最终发送给 AI 的差异上下文最大长度。\n\n插件会在不超过该值的前提下尽量接近该值，并且只保留完整文件差异，不会截断单个文件差异。",
+
+  "config.includeExtendedDescription.title": "Commit 描述",
+  "config.includeExtendedDescription.description": "控制是否生成 Commit 描述。",
+  "config.includeExtendedDescription.markdownDescription": "控制是否生成 `Commit 描述`。",
+
+  "config.uiLanguage.title": "UI 语言",
+  "config.uiLanguage.description": "插件 UI 语言单选列表，默认值为简体中文。",
+  "config.uiLanguage.markdownDescription": "插件 UI 语言单选列表。\n\n默认值：`简体中文`。",
+
+  "view.title.commitTitle": "Commit 标题"
+}

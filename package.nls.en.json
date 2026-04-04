@@ -1,0 +1,56 @@
+{
+  "extension.description": "Generate candidate commit messages in VSCode Source Control and write the selected result into the commit input box.",
+  "command.generate.title": "AI Generate",
+  "view.candidates.name": "Commit Candidates",
+  "config.title": "Comitron",
+
+  "config.selectedTool.title": "AI Tool",
+  "config.selectedTool.description": "Automatically detects ClaudeCode, Codex, and Gemini CLI. Codex is preferred by default. If none are found, Custom is selected.",
+  "config.selectedTool.markdownDescription": "Automatically detects the following tools:\n\n`ClaudeCode`\n`Codex`\n`Gemini CLI`\n\n`Codex` is preferred by default. If none are found, `Custom` is selected.",
+
+  "config.detectedTools.title": "Detected Tools",
+  "config.detectedTools.description": "Shows the tools and paths currently detected on this machine. This field is for reference only.",
+  "config.detectedTools.markdownDescription": "Shows the tools and paths currently detected on this machine. This field is for reference only.",
+
+  "config.toolPath.title": "Tool Path",
+  "config.toolPath.description": "The path is auto-filled for detected tools. It is cleared when Custom is selected. See the example below.",
+  "config.toolPath.markdownDescription": "The path is auto-filled for detected tools. It is cleared when `Custom` is selected.\n\nExample value: `D:\\nodejs\\node_global\\codex`",
+
+  "config.apiServiceJson.title": "API Service JSON",
+  "config.apiServiceJson.description": "Only takes effect when API Service is selected. The required keys are API URL, API Key, Model ID, and Custom Parameters.",
+  "config.apiServiceJson.markdownDescription": "Only takes effect when `API Service` is selected.\n\nRequired keys:\n`API URL`\n`API Key`\n`Model ID`\n`Custom Parameters`\n\n`Custom Parameters` is used for extra parameters such as temperature.",
+
+  "config.promptTemplate.title": "Prompt",
+  "config.promptTemplate.description": "The main prompt. You can edit it directly. Keep the variables unchanged. Variable details are listed below.",
+  "config.promptTemplate.markdownDescription": "The main prompt. You can edit it directly. Keep the variables unchanged.\n\nVariables:\n\n`{{commitLanguage}}`: inserts the current commit message language;\n\n`{{extendedDescriptionInstruction}}`: inserts the instruction for the Commit Description toggle;\n\n`{{changedFiles}}`: inserts the content and diff of all changed files in the current repository.",
+
+  "config.extendedDescriptionEnabledPrompt.title": "Prompt When Commit Description Is Enabled",
+  "config.extendedDescriptionEnabledPrompt.description": "Used when Commit Description is enabled. Replaces {{extendedDescriptionInstruction}}.",
+  "config.extendedDescriptionEnabledPrompt.markdownDescription": "Used when `Commit Description` is enabled. Replaces `{{extendedDescriptionInstruction}}`.",
+
+  "config.extendedDescriptionDisabledPrompt.title": "Prompt When Commit Description Is Disabled",
+  "config.extendedDescriptionDisabledPrompt.description": "Used when Commit Description is disabled. Replaces {{extendedDescriptionInstruction}}.",
+  "config.extendedDescriptionDisabledPrompt.markdownDescription": "Used when `Commit Description` is disabled. Replaces `{{extendedDescriptionInstruction}}`.",
+
+  "config.toolResponsePromptTemplate.title": "Tool Response Prompt",
+  "config.toolResponsePromptTemplate.description": "The extra prompt used by all AI tools. It is recommended to keep the requirement that only JSON should be returned.",
+  "config.toolResponsePromptTemplate.markdownDescription": "The extra prompt used by all AI tools. It is recommended to keep the requirement that only JSON should be returned.",
+
+  "config.commitLanguage.title": "Commit Language",
+  "config.commitLanguage.description": "The language used to generate the commit message. Example values: Simplified Chinese, English",
+  "config.commitLanguage.markdownDescription": "The language used to generate the commit message.\n\nExample values: `Simplified Chinese`, `English`",
+
+  "config.contextBudget.title": "Context Budget",
+  "config.contextBudget.description": "Controls the maximum diff context length sent to the AI. The extension will get as close as possible to this value without exceeding it, and it only keeps complete file diffs.",
+  "config.contextBudget.markdownDescription": "Controls the maximum diff context length sent to the AI.\n\nThe extension will get as close as possible to this value without exceeding it, and it only keeps complete file diffs without truncating a single file diff.",
+
+  "config.includeExtendedDescription.title": "Commit Description",
+  "config.includeExtendedDescription.description": "Controls whether a commit description is generated.",
+  "config.includeExtendedDescription.markdownDescription": "Controls whether a `Commit Description` is generated.",
+
+  "config.uiLanguage.title": "UI Language",
+  "config.uiLanguage.description": "The UI language list of this extension. The default value is Simplified Chinese.",
+  "config.uiLanguage.markdownDescription": "The UI language list of this extension.\n\nDefault value: `Simplified Chinese`.",
+
+  "view.title.commitTitle": "Commit Title"
+}

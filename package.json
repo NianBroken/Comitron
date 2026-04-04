@@ -1,0 +1,215 @@
+{
+  "name": "comitron",
+  "displayName": "Comitron",
+  "description": "%extension.description%",
+  "version": "1.0.0",
+  "publisher": "NianBroken",
+  "author": "NianBroken",
+  "icon": "media/icon.png",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NianBroken/Comitron.git"
+  },
+  "homepage": "https://github.com/NianBroken/Comitron",
+  "bugs": {
+    "url": "https://github.com/NianBroken/Comitron/issues"
+  },
+  "engines": {
+    "vscode": "^1.110.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "l10n": "./l10n",
+  "contributes": {
+    "commands": [
+      {
+        "command": "comitron.generateCommitMessages",
+        "title": "%command.generate.title%",
+        "category": "Comitron",
+        "icon": {
+          "light": "media/light/ai-generate.svg",
+          "dark": "media/dark/ai-generate.svg"
+        }
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "comitron.generateCommitMessages",
+          "when": "scmProvider == git",
+          "group": "navigation@50"
+        }
+      ]
+    },
+    "views": {
+      "scm": [
+        {
+          "type": "webview",
+          "id": "comitron.candidatesView",
+          "name": "%view.candidates.name%",
+          "icon": "media/view-icon.svg",
+          "contextualTitle": "Comitron",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "%config.title%",
+      "properties": {
+        "comitron.selectedTool": {
+          "title": "%config.selectedTool.title%",
+          "type": "string",
+          "enum": [
+            "Codex",
+            "ClaudeCode",
+            "Gemini CLI",
+            "API服务",
+            "自定义"
+          ],
+          "default": "自定义",
+          "scope": "window",
+          "order": 1,
+          "description": "%config.selectedTool.description%",
+          "markdownDescription": "%config.selectedTool.markdownDescription%"
+        },
+        "comitron.detectedTools": {
+          "title": "%config.detectedTools.title%",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "order": 2,
+          "description": "%config.detectedTools.description%",
+          "markdownDescription": "%config.detectedTools.markdownDescription%"
+        },
+        "comitron.toolPath": {
+          "title": "%config.toolPath.title%",
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "scope": "machine",
+          "order": 3,
+          "description": "%config.toolPath.description%",
+          "markdownDescription": "%config.toolPath.markdownDescription%"
+        },
+        "comitron.apiServiceJson": {
+          "title": "%config.apiServiceJson.title%",
+          "type": "string",
+          "default": "{\n  \"API地址\": \"https://api.openai.com/v1/chat/completions\",\n  \"API密钥\": \"sk-your-key\",\n  \"模型ID\": \"gpt-5-mini\",\n  \"自定义参数\": {\n    \"temperature\": 0.2,\n    \"top_p\": 0.9\n  }\n}",
+          "editPresentation": "multilineText",
+          "scope": "window",
+          "order": 4,
+          "description": "%config.apiServiceJson.description%",
+          "markdownDescription": "%config.apiServiceJson.markdownDescription%"
+        },
+        "comitron.promptTemplate": {
+          "title": "%config.promptTemplate.title%",
+          "type": "string",
+          "default": "你是一个专门生成 Git Commit Message 的助手。你的任务是基于下面提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n输出语言：{{commitLanguage}}\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件，不得只描述单个文件。\n2. 必须先判断本次提交的主要目的，再生成候选项。\n3. 3 条候选项都要准确描述同一组改动，但写法要有区分，不得重复。\n4. title 必须使用最合适的 Conventional Commits 前缀，例如 feat:、fix:、docs:、refactor:、test:、chore:。\n5. title 必须单行、明确、简洁，避免空话、避免模糊词、避免句号。\n6. 如果改动点很多，title 只概括最核心的提交目的，不要堆砌细节。\n7. description 只写补充说明，必须使用列表格式，每行一条，以 - 开头，不得重复 title。\n8. 当不需要 Extended description 时，description 必须返回空字符串。\n9. 只输出合法 JSON，不要输出解释、代码块、标题或任何额外文字。\n\n返回格式：\n{\n  \"messages\": [\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}",
+          "editPresentation": "multilineText",
+          "scope": "window",
+          "order": 5,
+          "description": "%config.promptTemplate.description%",
+          "markdownDescription": "%config.promptTemplate.markdownDescription%"
+        },
+        "comitron.extendedDescriptionEnabledPrompt": {
+          "title": "%config.extendedDescriptionEnabledPrompt.title%",
+          "type": "string",
+          "default": "需要生成 Commit 描述。description 字段必须返回简洁、清晰、允许换行的补充说明。",
+          "editPresentation": "multilineText",
+          "scope": "window",
+          "order": 6,
+          "description": "%config.extendedDescriptionEnabledPrompt.description%",
+          "markdownDescription": "%config.extendedDescriptionEnabledPrompt.markdownDescription%"
+        },
+        "comitron.extendedDescriptionDisabledPrompt": {
+          "title": "%config.extendedDescriptionDisabledPrompt.title%",
+          "type": "string",
+          "default": "不需要生成 Commit 描述。description 字段必须返回空字符串。",
+          "editPresentation": "multilineText",
+          "scope": "window",
+          "order": 7,
+          "description": "%config.extendedDescriptionDisabledPrompt.description%",
+          "markdownDescription": "%config.extendedDescriptionDisabledPrompt.markdownDescription%"
+        },
+        "comitron.toolResponsePromptTemplate": {
+          "title": "%config.toolResponsePromptTemplate.title%",
+          "type": "string",
+          "default": "请根据标准输入中的内容生成结果，只输出合法 JSON，不要输出解释、标题、代码块或其他内容。",
+          "editPresentation": "multilineText",
+          "scope": "window",
+          "order": 8,
+          "description": "%config.toolResponsePromptTemplate.description%",
+          "markdownDescription": "%config.toolResponsePromptTemplate.markdownDescription%"
+        },
+        "comitron.commitLanguage": {
+          "title": "%config.commitLanguage.title%",
+          "type": "string",
+          "default": "简体中文",
+          "scope": "window",
+          "order": 9,
+          "description": "%config.commitLanguage.description%",
+          "markdownDescription": "%config.commitLanguage.markdownDescription%"
+        },
+        "comitron.contextBudget": {
+          "title": "%config.contextBudget.title%",
+          "type": "number",
+          "default": 8192,
+          "minimum": 512,
+          "maximum": 65536,
+          "scope": "window",
+          "order": 10,
+          "description": "%config.contextBudget.description%",
+          "markdownDescription": "%config.contextBudget.markdownDescription%"
+        },
+        "comitron.includeExtendedDescription": {
+          "title": "%config.includeExtendedDescription.title%",
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "order": 11,
+          "description": "%config.includeExtendedDescription.description%",
+          "markdownDescription": "%config.includeExtendedDescription.markdownDescription%"
+        },
+        "comitron.uiLanguage": {
+          "title": "%config.uiLanguage.title%",
+          "type": "string",
+          "enum": [
+            "zh-CN",
+            "en"
+          ],
+          "enumItemLabels": [
+            "简体中文",
+            "English"
+          ],
+          "default": "zh-CN",
+          "scope": "window",
+          "order": 12,
+          "description": "%config.uiLanguage.description%",
+          "markdownDescription": "%config.uiLanguage.markdownDescription%"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package:vsix": "vsce package",
+    "publish:vsce": "vsce publish"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "@types/node": "^25.5.0",
+    "@types/vscode": "^1.110.0",
+    "typescript": "^6.0.2"
+  }
+}
