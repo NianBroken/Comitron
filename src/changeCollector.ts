@@ -35,7 +35,8 @@ export interface PromptContextResult {
  * 为了控制等待时间，这里只执行两次 Git CLI：
  * 1. 一次读取暂存区差异；
  * 2. 一次读取工作区差异。
- * 若整仓库差异拆分后仍未命中某个文件，再单独对该文件做一次兜底读取。
+ * 若整仓库差异拆分后仍未命中某个文件，再单独对该文件做兜底判断，
+ * 把新增文件、删除文件和普通已跟踪文件都补成可读差异。
  */
 export async function collectChangedFiles(repository: Repository): Promise<CollectedChange[]> {
   const rootPath = repository.rootUri.fsPath;
@@ -95,7 +96,7 @@ export async function collectChangedFiles(repository: Repository): Promise<Colle
 
     const fallbackDiff = mergedDiff
       ? ''
-      : await buildTrackedDiffFallback(rootPath, relativePath, entry.scopes);
+      : await buildFallbackDiff(rootPath, relativePath, entry.absolutePath, entry.scopes);
     const finalDiff = mergedDiff || fallbackDiff || t('无法读取文本内容。');
     const diffLineCount = countChangedLines(finalDiff);
 
@@ -277,14 +278,18 @@ function parseCombinedDiff(diffText: string): Map<string, string> {
 }
 
 /**
- * 为已跟踪文件执行按路径兜底读取。
- * 当整仓库差异已经拿到结果，但拆分后没有命中具体文件时，这里直接向 Git 读取该文件相对 HEAD 的差异。
+ * 为单个文件执行兜底读取。
+ * 这里按顺序处理三种情况：
+ * 1. 先尝试直接向 Git 读取该文件相对 HEAD 的差异；
+ * 2. 若文件在磁盘上存在但 Git 中未跟踪，则按新增文件生成差异；
+ * 3. 若文件在磁盘上不存在但 Git 中可读，则按删除文件生成差异。
  */
-async function buildTrackedDiffFallback(rootPath: string, relativePath: string, scopes: readonly string[]): Promise<string> {
-  if (scopes.includes(t('未跟踪'))) {
-    return '';
-  }
-
+async function buildFallbackDiff(
+  rootPath: string,
+  relativePath: string,
+  absolutePath: string,
+  scopes: readonly string[]
+): Promise<string> {
   info(`开始按文件兜底读取差异：${relativePath}`);
   const diffText = await runGitDiff(rootPath, buildGitDiffArgs({
     againstHead: true,
@@ -296,7 +301,28 @@ async function buildTrackedDiffFallback(rootPath: string, relativePath: string, 
     return diffText.trim();
   }
 
-  warn(`按文件兜底读取仍未拿到差异：${relativePath}`);
+  const existsOnDisk = await pathExists(absolutePath);
+  const trackedInGit = await isTrackedPath(rootPath, relativePath);
+
+  if (existsOnDisk && !trackedInGit) {
+    const untrackedDiff = await buildUntrackedDiff(relativePath, absolutePath);
+
+    if (untrackedDiff) {
+      info(`已按新增文件补出差异：${relativePath}`);
+      return untrackedDiff;
+    }
+  }
+
+  if (!existsOnDisk && trackedInGit) {
+    const deletedDiff = await buildDeletedDiff(rootPath, relativePath);
+
+    if (deletedDiff) {
+      info(`已按删除文件补出差异：${relativePath}`);
+      return deletedDiff;
+    }
+  }
+
+  warn(`按文件兜底读取仍未拿到差异：${relativePath}。existsOnDisk=${existsOnDisk}，trackedInGit=${trackedInGit}，scopes=${scopes.join('、') || '[空]'}`);
   return '';
 }
 
@@ -365,6 +391,43 @@ async function buildUntrackedDiff(relativePath: string, absolutePath: string): P
 }
 
 /**
+ * 为已删除文件构造完整的删除 diff。
+ * 这里从 Git 中读取删除前的文件内容，再拼成标准删除差异。
+ */
+async function buildDeletedDiff(rootPath: string, relativePath: string): Promise<string> {
+  try {
+    const buffer = await readGitFileBuffer(rootPath, relativePath);
+
+    if (looksBinary(buffer)) {
+      return [
+        `diff --git a/${relativePath} b/${relativePath}`,
+        'deleted file mode 100644',
+        `--- a/${relativePath}`,
+        '+++ /dev/null',
+        `-${t('二进制文件，已跳过内容读取。')}`
+      ].join('\n');
+    }
+
+    const content = buffer.toString('utf8').replace(/\r\n/g, '\n');
+    const body = content
+      .split('\n')
+      .map((line) => `-${line}`)
+      .join('\n');
+
+    return [
+      `diff --git a/${relativePath} b/${relativePath}`,
+      'deleted file mode 100644',
+      `--- a/${relativePath}`,
+      '+++ /dev/null',
+      body
+    ].join('\n');
+  } catch (error) {
+    warn(`已删除文件 diff 生成失败：${relativePath}，原因：${error instanceof Error ? error.message : String(error)}`);
+    return '';
+  }
+}
+
+/**
  * 统计单个差异块的变化行数。
  * 这里只统计真正的新增行和删除行，不统计 diff 头信息。
  */
@@ -421,6 +484,41 @@ function stripQuotes(value: string): string {
  */
 function normalizePath(filePath: string): string {
   return filePath.split(path.sep).join('/');
+}
+
+/**
+ * 判断文件当前是否存在于 Git 跟踪范围内。
+ * 这里同时检查索引和 HEAD，避免新增、删除、暂存几种状态互相漏判。
+ */
+async function isTrackedPath(rootPath: string, relativePath: string): Promise<boolean> {
+  const trackedInIndex = await tryRunCommand(
+    'git',
+    ['ls-files', '--error-unmatch', '--', relativePath],
+    rootPath
+  );
+
+  if (trackedInIndex) {
+    return true;
+  }
+
+  const trackedInHead = await tryRunCommand(
+    'git',
+    ['cat-file', '-e', `HEAD:${relativePath}`],
+    rootPath
+  );
+
+  return trackedInHead;
+}
+
+/**
+ * 从 Git 中读取某个文件在 HEAD 中的原始内容。
+ */
+async function readGitFileBuffer(rootPath: string, relativePath: string): Promise<Buffer> {
+  return runCommandBuffer(
+    'git',
+    ['show', `HEAD:${relativePath}`],
+    rootPath
+  );
 }
 
 /**
@@ -491,4 +589,76 @@ async function runCommand(
       reject(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code}`));
     });
   });
+}
+
+/**
+ * 启动命令行进程并按 Buffer 收集标准输出。
+ * 这个实现专门用于需要保留原始字节内容的场景。
+ */
+async function runCommandBuffer(
+  executablePath: string,
+  args: string[],
+  workingDirectory: string
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executablePath, args, {
+      cwd: workingDirectory,
+      shell: process.platform === 'win32',
+      windowsHide: true,
+      env: process.env
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    let stderr = '';
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdoutChunks));
+        return;
+      }
+
+      reject(new Error(stderr.trim() || `Process exited with code ${code}`));
+    });
+  });
+}
+
+/**
+ * 尝试执行命令并返回是否成功。
+ * 这里只关心命令能否成功，不关心输出内容。
+ */
+async function tryRunCommand(
+  executablePath: string,
+  args: string[],
+  workingDirectory: string
+): Promise<boolean> {
+  try {
+    await runCommand(executablePath, args, workingDirectory);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 判断某个路径当前是否存在于磁盘。
+ */
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
