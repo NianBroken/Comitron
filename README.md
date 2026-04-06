@@ -35,7 +35,7 @@ npm run package:vsix
 
 [Great-Firewall](https://nianbroken.github.io/Great-Firewall/) 好用的 VPN
 
-[Cubence](https://cubence.klaio.top/) AI API Code 中转
+[Ciii](https://ciii.klaio.top/) Codex 中转
 
 [Aizex](https://aizex.klaio.top/) ChatGPT 镜像站
 
