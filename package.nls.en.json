@@ -1,5 +1,5 @@
 {
-  "extension.description": "Generate candidate commit messages in VSCode Source Control and write the selected result into the commit input box.",
+  "extension.description": "Invoke AI to generate the most appropriate Commit Message.",
   "command.generate.title": "AI Generate",
   "view.candidates.name": "Commit Candidates",
   "config.title": "Comitron",

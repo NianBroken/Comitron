@@ -1,5 +1,5 @@
 {
-  "extension.description": "在 VSCode 的源代码管理面板中生成候选 Commit Message，并把选中内容写入提交输入框。",
+  "extension.description": "调用 AI 生成最恰当的 Commit Message。",
   "command.generate.title": "AI生成",
   "view.candidates.name": "Commit 候选项",
   "config.title": "Comitron",

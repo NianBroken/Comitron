@@ -3,4 +3,8 @@ src/**
 *.ts
 tsconfig.json
 package-lock.json
+.npmrc
+.vscodeignore
+*.vsix
+out/**/*.map
 .gitignore
