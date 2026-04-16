@@ -50,6 +50,12 @@ export class ToolPathInvalidError extends ToolPathError {
 class ApiServiceConfigError extends Error {}
 
 /**
+ * 响应 JSON Schema 配置错误。
+ * 这里专门用于提示设置页中的 Schema 文本不合法，或与当前固定返回结构不兼容。
+ */
+class ResponseJsonSchemaConfigError extends Error {}
+
+/**
  * API 服务模式最终解析出的配置对象。
  */
 interface ApiServiceConfig {
@@ -57,6 +63,18 @@ interface ApiServiceConfig {
   apiKey: string;
   modelId: string;
   customParameters: Record<string, unknown>;
+}
+
+/**
+ * 运行时可直接使用的响应 JSON Schema。
+ * 这里保留原始对象和关键约束，便于同时驱动 Prompt、Codex 输出约束和本地结果校验。
+ */
+interface ResponseJsonSchemaConfig {
+  text: string;
+  rootAllowsAdditionalProperties: boolean;
+  itemAllowsAdditionalProperties: boolean;
+  titleMinLength: number;
+  descriptionMinLength: number;
 }
 
 /**
@@ -68,37 +86,6 @@ interface ValidationResult {
   candidates?: CommitMessageCandidate[];
   error?: Error;
 }
-
-/**
- * 约束 AI 返回结果的 JSON Schema。
- * 无论底层是本地工具还是 API 服务，最终都必须遵守这个结构。
- */
-const COMMIT_MESSAGE_SCHEMA = {
-  type: 'object',
-  required: ['messages'],
-  additionalProperties: false,
-  properties: {
-    messages: {
-      type: 'array',
-      minItems: 3,
-      maxItems: 3,
-      items: {
-        type: 'object',
-        required: ['title', 'description'],
-        additionalProperties: false,
-        properties: {
-          title: {
-            type: 'string',
-            minLength: 1
-          },
-          description: {
-            type: 'string'
-          }
-        }
-      }
-    }
-  }
-} as const;
 
 /**
  * 已知本地工具的静态元数据。
@@ -134,7 +121,11 @@ export async function generateCommitMessageCandidates(
   workingDirectory: string,
   config: ComitronConfig
 ): Promise<CommitMessageCandidate[]> {
-  const toolConstraintPrompt = buildToolConstraintPrompt(config.toolResponsePromptTemplate);
+  const responseJsonSchema = parseResponseJsonSchema(config.responseJsonSchema);
+  const toolConstraintPrompt = buildToolConstraintPrompt(
+    config.toolResponsePromptTemplate,
+    responseJsonSchema.text
+  );
   let latestRawOutput = '';
   let latestError: Error | undefined;
 
@@ -142,9 +133,15 @@ export async function generateCommitMessageCandidates(
     tool: config.selectedTool,
     workingDirectory,
     promptLength: prompt.length,
-    toolConstraintPromptLength: toolConstraintPrompt.length
+    toolConstraintPromptLength: toolConstraintPrompt.length,
+    responseJsonSchemaLength: responseJsonSchema.text.length
   });
-  info(`工具响应 Prompt：\n${toolConstraintPrompt}`);
+  info('AI 输出约束已组装。它会作为补充 Prompt 发送给当前工具。Codex 模式下还会同步写入临时 Schema 文件。');
+  infoObject('AI 输出约束摘要', {
+    toolResponsePromptLength: config.toolResponsePromptTemplate.length,
+    responseJsonSchemaLength: responseJsonSchema.text.length,
+    responseJsonSchemaSetting: 'comitron.responseJsonSchema'
+  }, { compact: true });
 
   for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
     info(`开始第 ${attempt} 次生成尝试。`);
@@ -153,16 +150,22 @@ export async function generateCommitMessageCandidates(
       ? prompt
       : buildRepairPrompt(prompt, latestRawOutput, latestError);
 
-    info(`第 ${attempt} 次尝试使用的主输入长度：${currentPrompt.length}`);
-    info(`第 ${attempt} 次尝试主输入：\n${currentPrompt}`);
+    info(`第 ${attempt} 次尝试发送给工具的主输入长度：${currentPrompt.length}`);
+    info(`第 ${attempt} 次尝试发送给工具的主输入：\n${currentPrompt}`);
 
-    const rawOutput = await runSelectedTool(currentPrompt, toolConstraintPrompt, workingDirectory, config);
+    const rawOutput = await runSelectedTool(
+      currentPrompt,
+      toolConstraintPrompt,
+      responseJsonSchema,
+      workingDirectory,
+      config
+    );
     latestRawOutput = rawOutput;
 
     info(`第 ${attempt} 次尝试的原始输出长度：${rawOutput.length}`);
     info(`第 ${attempt} 次尝试的原始输出：\n${rawOutput}`);
 
-    const validation = validateCandidates(rawOutput);
+    const validation = validateCandidates(rawOutput, responseJsonSchema);
 
     if (validation.valid && validation.candidates) {
       info(`第 ${attempt} 次尝试校验通过。`);
@@ -211,6 +214,7 @@ export async function findCommandInPath(commandName: string): Promise<string | u
 async function runSelectedTool(
   prompt: string,
   toolConstraintPrompt: string,
+  responseJsonSchema: ResponseJsonSchemaConfig,
   workingDirectory: string,
   config: ComitronConfig
 ): Promise<string> {
@@ -221,7 +225,14 @@ async function runSelectedTool(
     case 'claudeCode':
     case 'geminiCli': {
       const executablePath = await resolveKnownToolPath(config.selectedTool, config.toolPath);
-      return runKnownTool(config.selectedTool, executablePath, prompt, toolConstraintPrompt, workingDirectory);
+      return runKnownTool(
+        config.selectedTool,
+        executablePath,
+        prompt,
+        toolConstraintPrompt,
+        responseJsonSchema,
+        workingDirectory
+      );
     }
     case 'custom': {
       if (!config.toolPath) {
@@ -238,7 +249,14 @@ async function runSelectedTool(
         throw new Error(t('自定义路径必须指向 Codex、ClaudeCode 或 Gemini CLI 的可执行文件。'));
       }
 
-      return runKnownTool(customToolKind, config.toolPath, prompt, toolConstraintPrompt, workingDirectory);
+      return runKnownTool(
+        customToolKind,
+        config.toolPath,
+        prompt,
+        toolConstraintPrompt,
+        responseJsonSchema,
+        workingDirectory
+      );
     }
     case 'apiService':
       return runApiService(prompt, toolConstraintPrompt, config.apiServiceJson);
@@ -281,12 +299,13 @@ async function runKnownTool(
   executablePath: string,
   prompt: string,
   toolConstraintPrompt: string,
+  responseJsonSchema: ResponseJsonSchemaConfig,
   workingDirectory: string
 ): Promise<string> {
   info(`开始调用已知工具。tool=${toolName}，executablePath=${executablePath}`);
 
   if (toolName === 'codex') {
-    return runCodex(executablePath, prompt, toolConstraintPrompt, workingDirectory);
+    return runCodex(executablePath, prompt, toolConstraintPrompt, responseJsonSchema, workingDirectory);
   }
 
   if (toolName === 'claudeCode') {
@@ -304,6 +323,7 @@ async function runCodex(
   executablePath: string,
   prompt: string,
   toolConstraintPrompt: string,
+  responseJsonSchema: ResponseJsonSchemaConfig,
   workingDirectory: string
 ): Promise<string> {
   const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'comitron-codex-'));
@@ -316,10 +336,11 @@ async function runCodex(
       executablePath,
       workingDirectory,
       schemaPath,
-      outputPath
+      outputPath,
+      responseJsonSchemaLength: responseJsonSchema.text.length
     });
 
-    await fs.writeFile(schemaPath, JSON.stringify(COMMIT_MESSAGE_SCHEMA), 'utf8');
+    await fs.writeFile(schemaPath, responseJsonSchema.text, 'utf8');
 
     await runProcess(
       executablePath,
@@ -465,13 +486,13 @@ async function runApiService(prompt: string, toolConstraintPrompt: string, rawCo
  * 2. 明确的 Schema 风格结构要求；
  * 3. 实际的 JSON Schema 文本。
  */
-function buildToolConstraintPrompt(toolResponsePromptTemplate: string): string {
+function buildToolConstraintPrompt(toolResponsePromptTemplate: string, responseJsonSchemaText: string): string {
   return [
     toolResponsePromptTemplate,
     '',
-    '你必须严格返回符合以下 JSON Schema 的 JSON。',
+    '下面的内容是返回结果必须满足的 JSON Schema。它描述输出结构，不是最终返回示例。',
     '禁止输出解释、禁止输出 Markdown 代码块、禁止输出额外字段。',
-    JSON.stringify(COMMIT_MESSAGE_SCHEMA, null, 2)
+    responseJsonSchemaText
   ].join('\n');
 }
 
@@ -496,13 +517,13 @@ function buildRepairPrompt(originalPrompt: string, invalidOutput: string, latest
  * 把工具输出校验成候选数组。
  * 只要校验失败，就返回明确错误，供重试逻辑继续使用。
  */
-function validateCandidates(rawOutput: string): ValidationResult {
+function validateCandidates(rawOutput: string, responseJsonSchema: ResponseJsonSchemaConfig): ValidationResult {
   try {
     info('开始校验 AI 输出。');
 
     return {
       valid: true,
-      candidates: parseCandidates(rawOutput)
+      candidates: parseCandidates(rawOutput, responseJsonSchema)
     };
   } catch (error) {
     warn(`AI 输出校验失败：${error instanceof Error ? error.message : String(error)}`);
@@ -512,6 +533,81 @@ function validateCandidates(rawOutput: string): ValidationResult {
       error: error instanceof Error ? error : new Error(String(error))
     };
   }
+}
+
+/**
+ * 把设置页中的响应 JSON Schema 解析成运行时可用结构。
+ * 这里只接受与当前固定候选格式兼容的 Schema，避免设置值与本地解析器互相打架。
+ */
+function parseResponseJsonSchema(rawSchema: string): ResponseJsonSchemaConfig {
+  if (!rawSchema.trim()) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 不能为空。'));
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(rawSchema);
+  } catch {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 不是合法 JSON。'));
+  }
+
+  if (!isPlainObject(parsed)) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 必须是 JSON 对象。'));
+  }
+
+  const schemaObject = parsed as Record<string, unknown>;
+
+  if (schemaObject.type !== 'object') {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的 type 必须是 object。'));
+  }
+
+  const rootRequired = readSchemaStringArray(schemaObject.required, 'required');
+  if (!rootRequired.includes('messages')) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 必须要求 messages 字段。'));
+  }
+
+  const rootProperties = readSchemaObject(schemaObject.properties, 'properties');
+  const messagesSchema = readSchemaObject(rootProperties.messages, 'properties.messages');
+
+  if (messagesSchema.type !== 'array') {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的 properties.messages.type 必须是 array。'));
+  }
+
+  if (messagesSchema.minItems !== 3 || messagesSchema.maxItems !== 3) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的 messages 数组长度必须固定为 3。'));
+  }
+
+  const itemSchema = readSchemaObject(messagesSchema.items, 'properties.messages.items');
+
+  if (itemSchema.type !== 'object') {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的 properties.messages.items.type 必须是 object。'));
+  }
+
+  const itemRequired = readSchemaStringArray(itemSchema.required, 'properties.messages.items.required');
+  if (!itemRequired.includes('title') || !itemRequired.includes('description')) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的每个 messages 项都必须要求 title 和 description 字段。'));
+  }
+
+  const itemProperties = readSchemaObject(itemSchema.properties, 'properties.messages.items.properties');
+  const titleSchema = readSchemaObject(itemProperties.title, 'properties.messages.items.properties.title');
+  const descriptionSchema = readSchemaObject(itemProperties.description, 'properties.messages.items.properties.description');
+
+  if (titleSchema.type !== 'string') {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的 title.type 必须是 string。'));
+  }
+
+  if (descriptionSchema.type !== 'string') {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 的 description.type 必须是 string。'));
+  }
+
+  return {
+    text: JSON.stringify(schemaObject, null, 2),
+    rootAllowsAdditionalProperties: schemaObject.additionalProperties !== false,
+    itemAllowsAdditionalProperties: itemSchema.additionalProperties !== false,
+    titleMinLength: readSchemaMinLength(titleSchema.minLength, 'properties.messages.items.properties.title.minLength'),
+    descriptionMinLength: readSchemaMinLength(descriptionSchema.minLength, 'properties.messages.items.properties.description.minLength')
+  };
 }
 
 /**
@@ -721,26 +817,86 @@ async function runProcess(
 /**
  * 解析工具返回的 JSON 文本，并校验候选条数是否正好为 3。
  */
-function parseCandidates(rawOutput: string): CommitMessageCandidate[] {
+function parseCandidates(rawOutput: string, responseJsonSchema: ResponseJsonSchemaConfig): CommitMessageCandidate[] {
   const jsonText = extractJsonText(rawOutput);
   info(`提取到的 JSON 文本长度：${jsonText.length}`);
 
   try {
-    const parsed = JSON.parse(jsonText) as { messages?: CommitMessageCandidate[] };
-    const messages = parsed.messages ?? [];
-
-    if (messages.length !== 3) {
-      throw new Error(t('AI 工具没有返回 3 条候选 Commit Message。'));
-    }
-
-    return messages.map((message) => ({
-      title: normalizeLine(message.title),
-      description: normalizeMultilineText(message.description)
-    }));
+    const parsed = JSON.parse(jsonText);
+    return normalizeCandidates(parsed, responseJsonSchema);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(t('无法从 AI 输出中解析结果：{0}', reason));
   }
+}
+
+/**
+ * 按当前响应 Schema 的关键约束规范化候选结果。
+ * 这里同时处理字段存在性、额外字段、字符串类型和最小长度。
+ */
+function normalizeCandidates(
+  payload: unknown,
+  responseJsonSchema: ResponseJsonSchemaConfig
+): CommitMessageCandidate[] {
+  const root = readCandidateObject(payload, '根对象');
+
+  if (!responseJsonSchema.rootAllowsAdditionalProperties) {
+    const unexpectedRootKeys = Object.keys(root).filter((key) => key !== 'messages');
+
+    if (unexpectedRootKeys.length > 0) {
+      throw new Error(t('AI 返回结果包含未允许的顶层字段：{0}', unexpectedRootKeys.join('、')));
+    }
+  }
+
+  const messagesValue = root.messages;
+
+  if (!Array.isArray(messagesValue)) {
+    throw new Error(t('AI 返回结果缺少 messages 数组。'));
+  }
+
+  if (messagesValue.length !== 3) {
+    throw new Error(t('AI 工具没有返回 3 条候选 Commit Message。'));
+  }
+
+  return messagesValue.map((message, index) => normalizeCandidate(message, index, responseJsonSchema));
+}
+
+/**
+ * 规范化单条候选项。
+ * 这里保证 title 和 description 都与当前 Schema 约束保持一致。
+ */
+function normalizeCandidate(
+  payload: unknown,
+  index: number,
+  responseJsonSchema: ResponseJsonSchemaConfig
+): CommitMessageCandidate {
+  const item = readCandidateObject(payload, `messages[${index}]`);
+
+  if (!responseJsonSchema.itemAllowsAdditionalProperties) {
+    const unexpectedKeys = Object.keys(item).filter((key) => key !== 'title' && key !== 'description');
+
+    if (unexpectedKeys.length > 0) {
+      throw new Error(t('AI 返回结果中的第 {0} 条候选项包含未允许字段：{1}', String(index + 1), unexpectedKeys.join('、')));
+    }
+  }
+
+  const title = readCandidateString(item.title, `messages[${index}].title`);
+  const description = readCandidateString(item.description, `messages[${index}].description`);
+  const normalizedTitle = normalizeLine(title);
+  const normalizedDescription = normalizeMultilineText(description);
+
+  if (normalizedTitle.length < responseJsonSchema.titleMinLength) {
+    throw new Error(t('AI 返回结果中的第 {0} 条候选项标题长度不足。', String(index + 1)));
+  }
+
+  if (normalizedDescription.length < responseJsonSchema.descriptionMinLength) {
+    throw new Error(t('AI 返回结果中的第 {0} 条候选项描述长度不足。', String(index + 1)));
+  }
+
+  return {
+    title: normalizedTitle,
+    description: normalizedDescription
+  };
 }
 
 /**
@@ -782,6 +938,70 @@ function normalizeMultilineText(value: string): string {
     .map((line) => line.trim())
     .join('\n')
     .trim();
+}
+
+/**
+ * 从候选结果中读取对象字段。
+ * 只要结构不符合预期，就立刻抛出明确错误。
+ */
+function readCandidateObject(value: unknown, fieldPath: string): Record<string, unknown> {
+  if (!isPlainObject(value)) {
+    throw new Error(t('AI 返回结果中的 {0} 必须是对象。', fieldPath));
+  }
+
+  return value;
+}
+
+/**
+ * 从候选结果中读取字符串字段。
+ * 这里不做默认值回填，避免把无效结果悄悄吞掉。
+ */
+function readCandidateString(value: unknown, fieldPath: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(t('AI 返回结果中的 {0} 必须是字符串。', fieldPath));
+  }
+
+  return value;
+}
+
+/**
+ * 读取 Schema 中的对象节点。
+ * 字段路径会原样带入错误信息，方便用户定位设置内容。
+ */
+function readSchemaObject(value: unknown, fieldPath: string): Record<string, unknown> {
+  if (!isPlainObject(value)) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 中的 {0} 必须是对象。', fieldPath));
+  }
+
+  return value;
+}
+
+/**
+ * 读取 Schema 中的字符串数组字段。
+ * 当前主要用于 required 这类约束节点。
+ */
+function readSchemaStringArray(value: unknown, fieldPath: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 中的 {0} 必须是字符串数组。', fieldPath));
+  }
+
+  return value;
+}
+
+/**
+ * 读取 Schema 中的 minLength。
+ * 未设置时按 0 处理，设置了就必须是非负整数。
+ */
+function readSchemaMinLength(value: unknown, fieldPath: string): number {
+  if (value === undefined) {
+    return 0;
+  }
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new ResponseJsonSchemaConfigError(t('响应 JSON Schema 中的 {0} 必须是非负整数。', fieldPath));
+  }
+
+  return value;
 }
 
 /**

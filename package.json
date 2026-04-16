@@ -2,7 +2,7 @@
   "name": "comitron",
   "displayName": "Comitron",
   "description": "%extension.description%",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "NianBroken",
   "author": "NianBroken",
   "icon": "media/icon.png",
@@ -113,7 +113,7 @@
         "comitron.promptTemplate": {
           "title": "%config.promptTemplate.title%",
           "type": "string",
-          "default": "你是一个专门生成 Git Commit Message 的助手。你的任务是基于下面提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n输出语言：{{commitLanguage}}\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件，不得只描述单个文件。\n2. 必须先判断本次提交的主要目的，再生成候选项。\n3. 3 条候选项都要准确描述同一组改动，但写法要有区分，不得重复。\n4. title 必须使用最合适的 Conventional Commits 前缀，例如 fix:、feat:、build:、chore:、ci:、docs:、style:、refactor:、perf:、test:，等等。\n5. title 必须单行、明确、简洁，避免空话、避免模糊词、避免句号。\n6. 如果改动点很多，title 只概括最核心的提交目的，不要堆砌细节。\n7. description 只写补充说明，必须使用列表格式，每行一条，以 - 开头，不得重复 title。\n8. 当不需要 Extended description 时，description 必须返回空字符串。\n9. 只输出合法 JSON，不要输出解释、代码块、标题或任何额外文字。\n\n返回格式：\n{\n  \"messages\": [\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}",
+          "default": "基于下文提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n语言要求：\n- 每条候选项的 title 与 description 均必须使用{{commitLanguage}}语言输出。\n\ndescription 字段要求：\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件进行归纳，不得仅描述其中的单个文件。\n2. 必须先判断本次提交的主要目的，再据此生成候选项。\n3. title 必须使用最合适的 Conventional Commits 前缀，可选值包括但不限于 fix:、feat:、build:、chore:、ci:、docs:、style:、refactor:、perf:、test: 等。\n4. 3 条候选项必须准确描述同一组改动，但在写法上需有所区分，文字不得重复。不同候选项之间的 Conventional Commits 前缀允许重复。\n5. title 必须为单行文本，表述明确、简洁，避免空话与模糊词汇，且结尾不得使用句号。\n6. 若改动点较多，title 只概括最核心的提交目的，不得堆砌细节。\n7. 只输出合法 JSON，不得输出任何解释、代码块标记、标题或其他额外文字。\n\n返回格式：\n{\n  \"messages\": [\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}",
           "editPresentation": "multilineText",
           "scope": "window",
           "order": 5,
@@ -123,7 +123,7 @@
         "comitron.extendedDescriptionEnabledPrompt": {
           "title": "%config.extendedDescriptionEnabledPrompt.title%",
           "type": "string",
-          "default": "需要生成 Commit 描述。description 字段必须返回简洁、清晰、允许换行的补充说明。",
+          "default": "- 必须生成 Commit 描述，description 字段不得为空。\n- description 仅用于补充说明，不得重复 title 的内容。\n- description 必须采用列表格式，每一行为一条，以「- 」开头。\n- description 允许换行，但不得出现空行。\n- description 的表述应简洁、清晰，指向具体改动。",
           "editPresentation": "multilineText",
           "scope": "window",
           "order": 6,
@@ -133,7 +133,7 @@
         "comitron.extendedDescriptionDisabledPrompt": {
           "title": "%config.extendedDescriptionDisabledPrompt.title%",
           "type": "string",
-          "default": "不需要生成 Commit 描述。description 字段必须返回空字符串。",
+          "default": "- 不需要生成 Commit 描述。\n- 每条候选项的 description 字段必须返回空字符串。",
           "editPresentation": "multilineText",
           "scope": "window",
           "order": 7,
@@ -150,12 +150,22 @@
           "description": "%config.toolResponsePromptTemplate.description%",
           "markdownDescription": "%config.toolResponsePromptTemplate.markdownDescription%"
         },
+        "comitron.responseJsonSchema": {
+          "title": "%config.responseJsonSchema.title%",
+          "type": "string",
+          "default": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"messages\"\n  ],\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"messages\": {\n      \"type\": \"array\",\n      \"minItems\": 3,\n      \"maxItems\": 3,\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\n          \"title\",\n          \"description\"\n        ],\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"title\": {\n            \"type\": \"string\",\n            \"minLength\": 1\n          },\n          \"description\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  }\n}",
+          "editPresentation": "multilineText",
+          "scope": "window",
+          "order": 9,
+          "description": "%config.responseJsonSchema.description%",
+          "markdownDescription": "%config.responseJsonSchema.markdownDescription%"
+        },
         "comitron.commitLanguage": {
           "title": "%config.commitLanguage.title%",
           "type": "string",
           "default": "简体中文",
           "scope": "window",
-          "order": 9,
+          "order": 10,
           "description": "%config.commitLanguage.description%",
           "markdownDescription": "%config.commitLanguage.markdownDescription%"
         },
@@ -166,7 +176,7 @@
           "minimum": 512,
           "maximum": 65536,
           "scope": "window",
-          "order": 10,
+          "order": 11,
           "description": "%config.contextBudget.description%",
           "markdownDescription": "%config.contextBudget.markdownDescription%"
         },
@@ -175,7 +185,7 @@
           "type": "boolean",
           "default": false,
           "scope": "window",
-          "order": 11,
+          "order": 12,
           "description": "%config.includeExtendedDescription.description%",
           "markdownDescription": "%config.includeExtendedDescription.markdownDescription%"
         },
@@ -192,7 +202,7 @@
           ],
           "default": "zh-CN",
           "scope": "window",
-          "order": 12,
+          "order": 13,
           "description": "%config.uiLanguage.description%",
           "markdownDescription": "%config.uiLanguage.markdownDescription%"
         }
@@ -207,9 +217,9 @@
     "publish:vsce": "vsce publish"
   },
   "devDependencies": {
-    "@vscode/vsce": "3.7.1",
     "@types/node": "^25.5.0",
     "@types/vscode": "^1.110.0",
+    "@vscode/vsce": "^3.9.0",
     "typescript": "^6.0.2"
   },
   "overrides": {

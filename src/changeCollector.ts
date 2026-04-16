@@ -31,6 +31,16 @@ export interface PromptContextResult {
 }
 
 /**
+ * 单次 Git diff 调用的日志上下文。
+ * 这里把阶段、范围和目标文件拆开，避免不同调用共用一套含糊文案。
+ */
+interface GitDiffLogContext {
+  stage: string;
+  scope: string;
+  relativePath?: string;
+}
+
+/**
  * 收集当前仓库里所有已更改文件的完整差异。
  * 为了控制等待时间，这里只执行两次 Git CLI：
  * 1. 一次读取暂存区差异；
@@ -54,8 +64,14 @@ export async function collectChangedFiles(repository: Repository): Promise<Colle
   info(`开始快速收集差异。文件数量：${entries.length}`);
 
   const [stagedDiffText, workingTreeDiffText] = await Promise.all([
-    runGitDiff(rootPath, buildGitDiffArgs({ staged: true })),
-    runGitDiff(rootPath, buildGitDiffArgs({ staged: false }))
+    runGitDiff(rootPath, buildGitDiffArgs({ staged: true }), {
+      stage: '收集暂存区差异',
+      scope: '整仓库'
+    }),
+    runGitDiff(rootPath, buildGitDiffArgs({ staged: false }), {
+      stage: '收集工作区差异',
+      scope: '整仓库'
+    })
   ]);
 
   const stagedDiffMap = parseCombinedDiff(stagedDiffText);
@@ -176,10 +192,10 @@ export function buildPromptContext(changes: CollectedChange[], budget: number): 
   const text = includedBlocks.join('\n\n------------------------------\n\n');
 
   infoObject('最终上下文筛选结果', {
-    budget,
-    usedLength,
-    includedFiles,
-    omittedFiles
+    预算上限: budget,
+    已使用长度: usedLength,
+    已纳入文件: includedFiles,
+    已省略文件: omittedFiles
   });
 
   return {
@@ -225,21 +241,26 @@ function addChanges(changeMap: Map<string, Set<string>>, changes: readonly { uri
 }
 
 /**
- * 用单次 Git CLI 命令读取整仓库差异。
- * 这里的结果后面会再拆成逐文件块。
+ * 用单次 Git CLI 命令读取差异。
+ * 这里既用于整仓库批量读取，也用于按文件兜底读取。
  */
-async function runGitDiff(rootPath: string, args: string[]): Promise<string> {
+async function runGitDiff(rootPath: string, args: string[], context: GitDiffLogContext): Promise<string> {
+  const targetText = context.relativePath ?? '[整仓库]';
+
   try {
-    infoObject('开始执行整仓库 Git 差异命令', {
-      rootPath,
+    infoObject('开始执行 Git 差异命令', {
+      阶段: context.stage,
+      范围: context.scope,
+      目标: targetText,
+      仓库路径: rootPath,
       args
-    });
+    }, { compact: true });
 
     const result = await runCommand('git', args, rootPath);
-    info(`整仓库 Git 差异命令完成。输出长度：${result.stdout.length}`);
+    info(`Git 差异命令完成。阶段：${context.stage}，范围：${context.scope}，目标：${targetText}，输出长度：${result.stdout.length}`);
     return result.stdout;
   } catch (error) {
-    warn(`整仓库 Git 差异命令失败：${error instanceof Error ? error.message : String(error)}`);
+    warn(`Git 差异命令失败。阶段：${context.stage}，范围：${context.scope}，目标：${targetText}，原因：${error instanceof Error ? error.message : String(error)}`);
     return '';
   }
 }
@@ -294,7 +315,11 @@ async function buildFallbackDiff(
   const diffText = await runGitDiff(rootPath, buildGitDiffArgs({
     againstHead: true,
     relativePath
-  }));
+  }), {
+    stage: '按文件兜底读取差异',
+    scope: '单个文件',
+    relativePath
+  });
 
   if (diffText.trim()) {
     info(`按文件兜底读取成功：${relativePath}`);

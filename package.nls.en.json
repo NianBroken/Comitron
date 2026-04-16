@@ -33,8 +33,12 @@
   "config.extendedDescriptionDisabledPrompt.markdownDescription": "Used when `Commit Description` is disabled. Replaces `{{extendedDescriptionInstruction}}`.",
 
   "config.toolResponsePromptTemplate.title": "Tool Response Prompt",
-  "config.toolResponsePromptTemplate.description": "The extra prompt used by all AI tools. It is recommended to keep the requirement that only JSON should be returned.",
-  "config.toolResponsePromptTemplate.markdownDescription": "The extra prompt used by all AI tools. It is recommended to keep the requirement that only JSON should be returned.",
+  "config.toolResponsePromptTemplate.description": "The extra prompt used by all AI tools. Use it for general response requirements. Use the Response JSON Schema setting below for the return structure.",
+  "config.toolResponsePromptTemplate.markdownDescription": "The extra prompt used by all AI tools. Use it for general response requirements.\n\nUse the `Response JSON Schema` setting below for the return structure.",
+
+  "config.responseJsonSchema.title": "Response JSON Schema",
+  "config.responseJsonSchema.description": "Defines the structure that the AI response must follow. It is appended to the Tool Response Prompt and written to a temporary schema file in Codex mode. It describes the return structure, not a literal example that the AI should echo back.",
+  "config.responseJsonSchema.markdownDescription": "Defines the structure that the AI response must follow. It is appended to the Tool Response Prompt and written to a temporary schema file in `Codex` mode.\n\nIt describes the return structure, not a literal example that the AI should echo back.\n\nThe current implementation requires a `messages` array with exactly `3` items, and every item must contain `title` and `description`.",
 
   "config.commitLanguage.title": "Commit Language",
   "config.commitLanguage.description": "The language used to generate the commit message. Example values: Simplified Chinese, English",

@@ -33,8 +33,12 @@
   "config.extendedDescriptionDisabledPrompt.markdownDescription": "关闭 `Commit 描述` 时使用，会替换 `{{extendedDescriptionInstruction}}`。",
 
   "config.toolResponsePromptTemplate.title": "工具响应 Prompt",
-  "config.toolResponsePromptTemplate.description": "所有 AI 的补充 Prompt，建议保留只输出 JSON 的要求。",
-  "config.toolResponsePromptTemplate.markdownDescription": "所有 AI 的补充 Prompt。建议保留“只输出 JSON”的要求。",
+  "config.toolResponsePromptTemplate.description": "所有 AI 的补充 Prompt。这里只放通用返回要求，返回结构约束请使用下方的响应 JSON Schema。",
+  "config.toolResponsePromptTemplate.markdownDescription": "所有 AI 的补充 Prompt。这里只放通用返回要求。\n\n返回结构约束请使用下方的 `响应 JSON Schema`。",
+
+  "config.responseJsonSchema.title": "响应 JSON Schema",
+  "config.responseJsonSchema.description": "用于约束 AI 返回结构。它会追加到工具响应 Prompt，并在 Codex 模式下写入临时 Schema 文件。它描述的是返回结构，不是 AI 最终要原样输出的示例 JSON。",
+  "config.responseJsonSchema.markdownDescription": "用于约束 AI 返回结构。它会追加到工具响应 Prompt，并在 `Codex` 模式下写入临时 Schema 文件。\n\n它描述的是返回结构，不是 AI 最终要原样输出的示例 JSON。\n\n当前实现固定要求返回 `messages` 数组，长度为 `3`，每项都必须包含 `title` 和 `description`。",
 
   "config.commitLanguage.title": "Commit Language",
   "config.commitLanguage.description": "Commit Message 生成语言。示例值：简体中文、English",

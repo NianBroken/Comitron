@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { formatLogTimestamp, getRuntimeClockSnapshot } from './time';
 
 /**
  * 插件统一使用的输出通道名称。
@@ -9,6 +10,14 @@ const OUTPUT_CHANNEL_NAME = 'Comitron';
 let outputChannel: vscode.OutputChannel | undefined;
 
 /**
+ * 数据日志的展示选项。
+ * compact 为 true 时使用单行格式，适合短对象和短数组。
+ */
+interface LogObjectOptions {
+  compact?: boolean;
+}
+
+/**
  * 初始化输出通道。
  * 这个方法只会创建一次，后续重复调用会直接复用已有通道。
  */
@@ -16,6 +25,7 @@ export function initializeLogger(): vscode.OutputChannel {
   if (!outputChannel) {
     outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
     info('输出通道已初始化。');
+    infoObject('当前时间环境', getRuntimeClockSnapshot(), { compact: true });
   }
 
   return outputChannel;
@@ -27,6 +37,15 @@ export function initializeLogger(): vscode.OutputChannel {
  */
 export function getLogger(): vscode.OutputChannel {
   return outputChannel ?? initializeLogger();
+}
+
+/**
+ * 释放输出通道并清空内部引用。
+ * 这样扩展再次激活时可以重新创建一条可用通道，不会复用已释放实例。
+ */
+export function disposeLogger(): void {
+  outputChannel?.dispose();
+  outputChannel = undefined;
 }
 
 /**
@@ -76,8 +95,8 @@ export function error(message: string, reason?: unknown): void {
  * 记录带标题的数据日志。
  * 这里会自动把对象序列化成易读文本，方便在失败时快速定位问题。
  */
-export function infoObject(title: string, value: unknown): void {
-  append('INFO', `${title}：${serialize(value)}`);
+export function infoObject(title: string, value: unknown, options: LogObjectOptions = {}): void {
+  append('INFO', `${title}：${serialize(value, options)}`);
 }
 
 /**
@@ -85,7 +104,7 @@ export function infoObject(title: string, value: unknown): void {
  * 每条日志都带有时间和级别，便于按时间顺序排查问题。
  */
 function append(level: 'INFO' | 'WARN' | 'ERROR', message: string): void {
-  const timestamp = new Date().toISOString();
+  const timestamp = formatLogTimestamp();
   getLogger().appendLine(`[${timestamp}] [${level}] ${message}`);
 }
 
@@ -93,13 +112,17 @@ function append(level: 'INFO' | 'WARN' | 'ERROR', message: string): void {
  * 把对象安全地转成字符串。
  * 序列化失败时，至少保证输出一个可读占位文本。
  */
-function serialize(value: unknown): string {
+function serialize(value: unknown, options: LogObjectOptions): string {
   if (typeof value === 'string') {
     return value;
   }
 
   try {
-    return JSON.stringify(value, null, 2);
+    const serialized = options.compact
+      ? JSON.stringify(value)
+      : JSON.stringify(value, null, 2);
+
+    return serialized ?? '[无法序列化的值]';
   } catch {
     return '[无法序列化的值]';
   }

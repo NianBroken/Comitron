@@ -41,6 +41,7 @@ export interface ComitronConfig {
   extendedDescriptionEnabledPrompt: string;
   extendedDescriptionDisabledPrompt: string;
   toolResponsePromptTemplate: string;
+  responseJsonSchema: string;
   commitLanguage: string;
   contextBudget: number;
   includeExtendedDescription: boolean;
@@ -99,7 +100,7 @@ export const SELECTED_TOOL_SETTING_VALUES = {
  * 模板中保留的变量会在运行时被实际值替换。
  */
 export const DEFAULT_PROMPT_TEMPLATE =
-  '你是一个专门生成 Git Commit Message 的助手。你的任务是基于下面提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n输出语言：{{commitLanguage}}\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件，不得只描述单个文件。\n2. 必须先判断本次提交的主要目的，再生成候选项。\n3. 3 条候选项都要准确描述同一组改动，但写法要有区分，不得重复。\n4. title 必须使用最合适的 Conventional Commits 前缀，例如 fix:、feat:、build:、chore:、ci:、docs:、style:、refactor:、perf:、test:，等等。\n5. title 必须单行、明确、简洁，避免空话、避免模糊词、避免句号。\n6. 如果改动点很多，title 只概括最核心的提交目的，不要堆砌细节。\n7. description 只写补充说明，必须使用列表格式，每行一条，以 - 开头，不得重复 title。\n8. 当不需要 Extended description 时，description 必须返回空字符串。\n9. 只输出合法 JSON，不要输出解释、代码块、标题或任何额外文字。\n\n返回格式：\n{\n  "messages": [\n    {\n      "title": "type: summary",\n      "description": "extended description"\n    },\n    {\n      "title": "type: summary",\n      "description": "extended description"\n    },\n    {\n      "title": "type: summary",\n      "description": "extended description"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}';
+  '基于下文提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n语言要求：\n- 每条候选项的 title 与 description 均必须使用{{commitLanguage}}语言输出。\n\ndescription 字段要求：\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件进行归纳，不得仅描述其中的单个文件。\n2. 必须先判断本次提交的主要目的，再据此生成候选项。\n3. title 必须使用最合适的 Conventional Commits 前缀，可选值包括但不限于 fix:、feat:、build:、chore:、ci:、docs:、style:、refactor:、perf:、test: 等。\n4. 3 条候选项必须准确描述同一组改动，但在写法上需有所区分，文字不得重复。不同候选项之间的 Conventional Commits 前缀允许重复。\n5. title 必须为单行文本，表述明确、简洁，避免空话与模糊词汇，且结尾不得使用句号。\n6. 若改动点较多，title 只概括最核心的提交目的，不得堆砌细节。\n7. 只输出合法 JSON，不得输出任何解释、代码块标记、标题或其他额外文字。\n\n返回格式：\n{\n  \"messages\": [\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}';
 
 /**
  * 提供给所有 AI 执行路径的补充 Prompt。
@@ -110,16 +111,53 @@ export const DEFAULT_TOOL_RESPONSE_PROMPT_TEMPLATE =
   '请根据标准输入中的内容生成结果，只输出合法 JSON，不要输出解释、标题、代码块或其他内容。';
 
 /**
+ * 默认的 AI 响应 JSON Schema。
+ * 这份结构约束描述的是返回结果的形状，不是最终结果示例本身。
+ */
+export const DEFAULT_RESPONSE_JSON_SCHEMA = {
+  type: 'object',
+  required: ['messages'],
+  additionalProperties: false,
+  properties: {
+    messages: {
+      type: 'array',
+      minItems: 3,
+      maxItems: 3,
+      items: {
+        type: 'object',
+        required: ['title', 'description'],
+        additionalProperties: false,
+        properties: {
+          title: {
+            type: 'string',
+            minLength: 1
+          },
+          description: {
+            type: 'string'
+          }
+        }
+      }
+    }
+  }
+} as const;
+
+/**
+ * 默认的 AI 响应 JSON Schema 文本。
+ * 设置页和工具执行阶段都复用这一份默认值，避免两边各自漂移。
+ */
+export const DEFAULT_RESPONSE_JSON_SCHEMA_TEXT = JSON.stringify(DEFAULT_RESPONSE_JSON_SCHEMA, null, 2);
+
+/**
  * 打开 Commit 描述时注入到主 Prompt 中的指令片段。
  */
 export const DEFAULT_EXTENDED_DESCRIPTION_ENABLED_PROMPT =
-  '需要生成 Commit 描述。description 字段必须返回简洁、清晰、允许换行的补充说明。';
+  '- 必须生成 Commit 描述，description 字段不得为空。\n- description 仅用于补充说明，不得重复 title 的内容。\n- description 必须采用列表格式，每一行为一条，以「- 」开头。\n- description 允许换行，但不得出现空行。\n- description 的表述应简洁、清晰，指向具体改动。';
 
 /**
  * 关闭 Commit 描述时注入到主 Prompt 中的指令片段。
  */
 export const DEFAULT_EXTENDED_DESCRIPTION_DISABLED_PROMPT =
-  '不需要生成 Commit 描述。description 字段必须返回空字符串。';
+  '- 不需要生成 Commit 描述。\n- 每条候选项的 description 字段必须返回空字符串。';
 
 /**
  * Commit Message 默认语言。
@@ -186,6 +224,8 @@ export function getComitronConfig(): ComitronConfig {
       || DEFAULT_EXTENDED_DESCRIPTION_DISABLED_PROMPT,
     toolResponsePromptTemplate: config.get<string>('toolResponsePromptTemplate', DEFAULT_TOOL_RESPONSE_PROMPT_TEMPLATE).trim()
       || DEFAULT_TOOL_RESPONSE_PROMPT_TEMPLATE,
+    responseJsonSchema: config.get<string>('responseJsonSchema', DEFAULT_RESPONSE_JSON_SCHEMA_TEXT).trim()
+      || DEFAULT_RESPONSE_JSON_SCHEMA_TEXT,
     commitLanguage: config.get<string>('commitLanguage', DEFAULT_COMMIT_LANGUAGE).trim() || DEFAULT_COMMIT_LANGUAGE,
     contextBudget: normalizeContextBudget(config.get<number>('contextBudget', 8192)),
     includeExtendedDescription: config.get<boolean>('includeExtendedDescription', false),
