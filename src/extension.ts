@@ -2,17 +2,13 @@ import * as vscode from 'vscode';
 import { CandidateViewProvider } from './candidateView';
 import { buildPromptContext, collectChangedFiles } from './changeCollector';
 import { getComitronConfig } from './config';
-import { getGitApi, type Repository } from './git';
+import { type UserFacingError, toUserFacingError } from './errors';
+import { getGitApi, getRepositoryHistoryState, type Repository } from './git';
 import { initializeI18n, t } from './i18n';
 import { disposeLogger, error as logError, info, infoObject, initializeLogger, showLogger, warn } from './logger';
 import { SettingsManager } from './settingsManager';
 import { captureMonotonicTimestamp, formatElapsedDuration, measureElapsedMilliseconds } from './time';
-import {
-  generateCommitMessageCandidates,
-  type CommitMessageCandidate,
-  ToolPathInvalidError,
-  ToolPathMissingError
-} from './toolRunner';
+import { generateCommitMessageCandidates, type CommitMessageCandidate } from './toolRunner';
 
 /**
  * 当前这一次生成出的候选结果会话。
@@ -27,6 +23,12 @@ interface CandidateSession {
 let settingsManager: SettingsManager | undefined;
 let candidateViewProvider: CandidateViewProvider | undefined;
 let candidateSession: CandidateSession | undefined;
+
+/**
+ * 首次提交场景下固定回填的 Commit Message。
+ * 这是一个明确的正常使用场景，不进入 AI 生成分支。
+ */
+const INITIAL_COMMIT_MESSAGE = 'Initial commit';
 
 /**
  * 扩展入口。
@@ -111,6 +113,7 @@ async function reportGenerationProgress(
 async function handleGenerateCommitMessages(): Promise<void> {
   const startedAt = captureMonotonicTimestamp();
   let generationCompleted = false;
+  let completionMessage: string | undefined;
 
   try {
     info('开始执行 Commit Message 生成流程。');
@@ -126,7 +129,7 @@ async function handleGenerateCommitMessages(): Promise<void> {
 
         if (!gitApi) {
           warn('未找到 VSCode 内置 Git 扩展。');
-          void vscode.window.showErrorMessage(t('找不到 Git 扩展，请确认 VSCode 已启用内置 Git 功能。'));
+          await showLoggedErrorMessage(t('找不到 Git 扩展，请确认 VSCode 已启用内置 Git 功能。'));
           showLogger(false);
           return false;
         }
@@ -135,12 +138,22 @@ async function handleGenerateCommitMessages(): Promise<void> {
 
         if (!repository) {
           warn('当前工作区没有可用 Git 仓库。');
-          void vscode.window.showErrorMessage(t('当前工作区没有可用的 Git 仓库。'));
+          await showLoggedErrorMessage(t('当前工作区没有可用的 Git 仓库。'));
           showLogger(false);
           return false;
         }
 
         info(`当前操作仓库：${repository.rootUri.fsPath}`);
+        await reportGenerationProgress(progress, '正在检查当前仓库是否已有提交记录...');
+        const repositoryHistoryState = await getRepositoryHistoryState(repository.rootUri.fsPath);
+        info(`当前仓库提交历史状态：${repositoryHistoryState}`);
+
+        if (repositoryHistoryState === 'initialCommit') {
+          await reportGenerationProgress(progress, '检测到当前仓库还没有提交记录，正在自动填入 Initial commit...');
+          await handleInitialCommitScenario(repository);
+          completionMessage = t('当前仓库还没有任何提交记录，已自动填入 Initial commit。');
+          return true;
+        }
 
         await reportGenerationProgress(progress, '正在收集 Git 差异...');
         const changes = await collectChangedFiles(repository);
@@ -152,7 +165,7 @@ async function handleGenerateCommitMessages(): Promise<void> {
 
         if (changes.length === 0) {
           warn('仓库中没有已更改文件，生成流程结束。');
-          void vscode.window.showInformationMessage(t('当前仓库没有检测到已更改的文件。'));
+          await showLoggedInformationMessage(t('当前仓库没有检测到已更改的文件。'));
           return false;
         }
 
@@ -213,12 +226,16 @@ async function handleGenerateCommitMessages(): Promise<void> {
     );
 
     if (generationCompleted) {
-      void vscode.window.showInformationMessage(t('候选 Commit Message 已更新，请在源代码管理面板中选择。'));
+      await showLoggedInformationMessage(
+        completionMessage ?? t('候选 Commit Message 已更新，请在源代码管理面板中选择。')
+      );
     }
   } catch (error) {
-    logError('生成流程失败。', error);
+    const userFacingError = toUserFacingError(error);
+    logError(`生成流程失败。分类：${userFacingError.kind}`, error);
+    infoObject('本次面向用户的错误提示', userFacingError);
     showLogger(false);
-    await handleError(error);
+    await handleError(userFacingError);
   } finally {
     info(`Commit Message 生成流程结束。结果：${generationCompleted ? '成功' : '未完成'}。总耗时：${formatElapsedDuration(measureElapsedMilliseconds(startedAt))}`);
   }
@@ -247,10 +264,9 @@ async function applyCandidate(candidateIndex: number): Promise<void> {
     description: candidate.description,
     finalMessage: fullMessage
   });
-  candidateSession.repository.inputBox.value = fullMessage;
+  await writeCommitMessageToInputBox(candidateSession.repository, fullMessage);
   candidateViewProvider?.setSelectedCandidate(candidateIndex);
-  await vscode.commands.executeCommand('workbench.view.scm');
-  void vscode.window.showInformationMessage(t('已写入 Commit Message 输入框。'));
+  await showLoggedInformationMessage(t('已写入 Commit Message 输入框。'));
 }
 
 /**
@@ -298,42 +314,95 @@ function formatCommitMessage(candidate: CommitMessageCandidate, includeExtendedD
 }
 
 /**
+ * 处理没有任何提交记录的首次提交场景。
+ * 这里直接写入固定 Commit Message，不再进入 AI 生成分支。
+ */
+async function handleInitialCommitScenario(repository: Repository): Promise<void> {
+  const initialCommitCandidate: CommitMessageCandidate = {
+    title: INITIAL_COMMIT_MESSAGE,
+    description: ''
+  };
+
+  info('检测到当前仓库还没有任何提交记录，按首次提交场景处理。');
+  infoObject('首次提交场景回填内容', {
+    repository: repository.rootUri.fsPath,
+    commitMessage: INITIAL_COMMIT_MESSAGE
+  });
+
+  candidateSession = {
+    repository,
+    candidates: [initialCommitCandidate],
+    includeExtendedDescription: false
+  };
+
+  await candidateViewProvider?.showCandidates([initialCommitCandidate], false);
+  candidateViewProvider?.setSelectedCandidate(0);
+  await writeCommitMessageToInputBox(repository, INITIAL_COMMIT_MESSAGE);
+}
+
+/**
+ * 把最终 Commit Message 写入 Git 输入框，并确保 SCM 视图可见。
+ * 这里同时服务首次提交场景和候选项点击场景。
+ */
+async function writeCommitMessageToInputBox(repository: Repository, commitMessage: string): Promise<void> {
+  repository.inputBox.value = commitMessage;
+  await vscode.commands.executeCommand('workbench.view.scm');
+}
+
+/**
  * 统一处理运行过程中的错误信息，并把用户引导到正确的设置项。
  */
-async function handleError(error: unknown): Promise<void> {
-  if (error instanceof ToolPathMissingError) {
-    warn(`工具路径缺失：${error.toolName}`);
-    const action = await vscode.window.showErrorMessage(
-      error.message,
-      t('打开设置')
-    );
+async function handleError(userFacingError: UserFacingError): Promise<void> {
+  const action = await showLoggedErrorMessage(
+    userFacingError.message,
+    ...userFacingError.actions.map((item) => item.label)
+  );
 
-    if (action) {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'comitron.toolPath');
-    }
-
+  if (!action) {
     return;
   }
 
-  if (error instanceof ToolPathInvalidError) {
-    warn(`工具路径无效：${error.configuredPath}`);
-    const action = await vscode.window.showErrorMessage(
-      error.message,
-      t('打开设置')
-    );
+  const selectedAction = userFacingError.actions.find((item) => item.label === action);
 
-    if (action) {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'comitron.toolPath');
-    }
-
+  if (!selectedAction) {
     return;
   }
 
-  const message = error instanceof Error ? error.message : String(error);
-  error instanceof Error
-    ? logError('发生未分类错误。', error)
-    : logError('发生未分类错误。', message);
-  await vscode.window.showErrorMessage(message);
+  infoObject('用户选择的错误处理动作', selectedAction, { compact: true });
+
+  if (selectedAction.type === 'showLogger') {
+    showLogger(false);
+    return;
+  }
+
+  if (selectedAction.type === 'openSettings' && selectedAction.settingKey) {
+    await vscode.commands.executeCommand('workbench.action.openSettings', selectedAction.settingKey);
+  }
+}
+
+/**
+ * 显示错误提示前先写入日志。
+ * 这样真实用户看到的文案也能被完整留档，便于复盘。
+ */
+async function showLoggedErrorMessage(message: string, ...actions: string[]): Promise<string | undefined> {
+  infoObject('向用户显示错误提示', {
+    message,
+    actions
+  });
+
+  return vscode.window.showErrorMessage(message, ...actions);
+}
+
+/**
+ * 显示普通提示前先写入日志。
+ */
+async function showLoggedInformationMessage(message: string, ...actions: string[]): Promise<string | undefined> {
+  infoObject('向用户显示普通提示', {
+    message,
+    actions
+  });
+
+  return vscode.window.showInformationMessage(message, ...actions);
 }
 
 /**

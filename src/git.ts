@@ -1,4 +1,13 @@
 import * as vscode from 'vscode';
+import { spawn } from 'node:child_process';
+import { t } from './i18n';
+
+/**
+ * 当前仓库的提交历史状态。
+ * hasCommits 表示已经存在至少一条提交记录。
+ * initialCommit 表示仓库还没有任何提交记录。
+ */
+export type RepositoryHistoryState = 'hasCommits' | 'initialCommit';
 
 /**
  * Git 仓库输入框的最小接口。
@@ -75,4 +84,67 @@ export async function getGitApi(): Promise<GitApi | undefined> {
   }
 
   return extension.exports.getAPI(1);
+}
+
+/**
+ * 读取当前仓库是否已经存在提交记录。
+ * 这里使用 Git 原生命令判断 branch.oid，避免把首次提交场景误判成普通异常。
+ */
+export async function getRepositoryHistoryState(rootPath: string): Promise<RepositoryHistoryState> {
+  const result = await runGitCommand(
+    rootPath,
+    ['status', '--porcelain=2', '--branch', '--untracked-files=no']
+  );
+  const branchOidLine = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith('# branch.oid '));
+
+  if (!branchOidLine) {
+    throw new Error(t('无法识别当前仓库的提交历史状态。'));
+  }
+
+  return branchOidLine === '# branch.oid (initial)' ? 'initialCommit' : 'hasCommits';
+}
+
+/**
+ * 执行 Git 命令并返回完整输出。
+ * 这里只负责读取仓库状态，不在这里解释业务含义。
+ */
+async function runGitCommand(
+  workingDirectory: string,
+  args: string[]
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, {
+      cwd: workingDirectory,
+      shell: process.platform === 'win32',
+      windowsHide: true,
+      env: process.env
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+
+      reject(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code}`));
+    });
+  });
 }

@@ -2,3 +2,13 @@
 /out/
 *.vsix
 /.vscode-test/
+/tmp-e2e/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+*.tsbuildinfo
+/coverage/
+Thumbs.db
+Desktop.ini

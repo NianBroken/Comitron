@@ -1,9 +1,23 @@
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
+import * as http from 'node:http';
+import * as https from 'node:https';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { t } from './i18n';
 import { type ComitronConfig, type KnownAiToolName } from './config';
+import {
+  AiOutputValidationError,
+  AiToolExecutionError,
+  ApiServiceConfigError,
+  ApiServiceEmptyResponseError,
+  ApiServiceHttpError,
+  ApiServiceNetworkError,
+  ApiServiceResponseParseError,
+  ResponseJsonSchemaConfigError,
+  ToolPathInvalidError,
+  ToolPathMissingError
+} from './errors';
 import { error as logError, info, infoObject, warn } from './logger';
 
 /**
@@ -16,46 +30,6 @@ export interface CommitMessageCandidate {
 }
 
 /**
- * 与路径相关的错误基类。
- * toolName 用于告诉用户当前是哪一个工具出了问题。
- */
-class ToolPathError extends Error {
-  constructor(
-    public readonly toolName: string,
-    message: string
-  ) {
-    super(message);
-  }
-}
-
-/**
- * 工具路径缺失时抛出的错误。
- */
-export class ToolPathMissingError extends ToolPathError {}
-
-/**
- * 工具路径无效时抛出的错误。
- * configuredPath 会原样带回给界面层，用于错误提示。
- */
-export class ToolPathInvalidError extends ToolPathError {
-  constructor(toolName: string, public readonly configuredPath: string) {
-    super(toolName, t('设置中的路径无效：{0}', configuredPath));
-  }
-}
-
-/**
- * API 服务配置错误。
- * 这里单独定义一个类型，方便和普通执行错误区分。
- */
-class ApiServiceConfigError extends Error {}
-
-/**
- * 响应 JSON Schema 配置错误。
- * 这里专门用于提示设置页中的 Schema 文本不合法，或与当前固定返回结构不兼容。
- */
-class ResponseJsonSchemaConfigError extends Error {}
-
-/**
  * API 服务模式最终解析出的配置对象。
  */
 interface ApiServiceConfig {
@@ -63,6 +37,7 @@ interface ApiServiceConfig {
   apiKey: string;
   modelId: string;
   customParameters: Record<string, unknown>;
+  requestUrl: URL;
 }
 
 /**
@@ -111,6 +86,18 @@ const KNOWN_TOOL_METADATA: Record<KnownAiToolName, { label: string; commandName:
  * 这样所有 AI 都具备“Schema 或类似 Schema”的能力。
  */
 const MAX_GENERATION_ATTEMPTS = 3;
+
+/**
+ * API 服务请求的超时时间。
+ * 这里统一限制单次请求等待时间，避免网络异常时无限挂起。
+ */
+const API_REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * API 请求正文里由插件自己掌控的字段。
+ * 这些键不能再被自定义参数覆盖，否则请求结构会失真。
+ */
+const RESERVED_API_PARAMETER_KEYS = new Set(['model', 'messages']);
 
 /**
  * 统一的候选生成入口。
@@ -240,7 +227,11 @@ async function runSelectedTool(
       }
 
       if (!(await pathExists(config.toolPath))) {
-        throw new ToolPathInvalidError('自定义工具', config.toolPath);
+        throw new ToolPathInvalidError(
+          '自定义工具',
+          config.toolPath,
+          t('设置中的路径无效：{0}', config.toolPath)
+        );
       }
 
       const customToolKind = inferCustomToolKind(config.toolPath);
@@ -277,7 +268,11 @@ async function resolveKnownToolPath(toolName: KnownAiToolName, configuredPath: s
       return configuredPath;
     }
 
-    throw new ToolPathInvalidError(metadata.label, configuredPath);
+    throw new ToolPathInvalidError(
+      metadata.label,
+      configuredPath,
+      t('设置中的路径无效：{0}', configuredPath)
+    );
   }
 
   const detectedPath = await findCommandInPath(metadata.commandName);
@@ -304,15 +299,24 @@ async function runKnownTool(
 ): Promise<string> {
   info(`开始调用已知工具。tool=${toolName}，executablePath=${executablePath}`);
 
-  if (toolName === 'codex') {
-    return runCodex(executablePath, prompt, toolConstraintPrompt, responseJsonSchema, workingDirectory);
-  }
+  try {
+    if (toolName === 'codex') {
+      return await runCodex(executablePath, prompt, toolConstraintPrompt, responseJsonSchema, workingDirectory);
+    }
 
-  if (toolName === 'claudeCode') {
-    return runClaudeCode(executablePath, prompt, toolConstraintPrompt, workingDirectory);
-  }
+    if (toolName === 'claudeCode') {
+      return await runClaudeCode(executablePath, prompt, toolConstraintPrompt, workingDirectory);
+    }
 
-  return runGeminiCli(executablePath, prompt, toolConstraintPrompt, workingDirectory);
+    return await runGeminiCli(executablePath, prompt, toolConstraintPrompt, workingDirectory);
+  } catch (error) {
+    throw new AiToolExecutionError(
+      KNOWN_TOOL_METADATA[toolName].label,
+      executablePath,
+      error instanceof Error ? error.message : String(error),
+      { cause: error instanceof Error ? error : undefined }
+    );
+  }
 }
 
 /**
@@ -436,47 +440,265 @@ async function runGeminiCli(
  */
 async function runApiService(prompt: string, toolConstraintPrompt: string, rawConfig: string): Promise<string> {
   const apiConfig = parseApiServiceConfig(rawConfig);
+  const requestPayload = {
+    model: apiConfig.modelId,
+    messages: [
+      {
+        role: 'system',
+        content: toolConstraintPrompt
+      },
+      {
+        role: 'user',
+        content: prompt
+      }
+    ],
+    ...apiConfig.customParameters
+  };
+  const requestBody = JSON.stringify(requestPayload);
 
   infoObject('API 服务执行参数', {
     apiUrl: apiConfig.apiUrl,
     modelId: apiConfig.modelId,
-    customParameters: apiConfig.customParameters
+    customParameters: apiConfig.customParameters,
+    requestBodyLength: requestBody.length
   });
 
-  const response = await fetch(apiConfig.apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiConfig.apiKey}`
-    },
-    body: JSON.stringify({
-      model: apiConfig.modelId,
-      messages: [
-        {
-          role: 'system',
-          content: toolConstraintPrompt
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      ...apiConfig.customParameters
-    })
-  });
+  const response = await sendApiServiceRequest(apiConfig, requestBody);
 
-  if (!response.ok) {
-    throw new Error(await response.text());
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new ApiServiceHttpError(
+      apiConfig.apiUrl,
+      apiConfig.modelId,
+      response.statusCode,
+      response.statusMessage,
+      extractApiErrorMessage(response.body),
+      truncateResponseBody(response.body)
+    );
   }
 
-  const payload = await response.json() as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+
+  try {
+    payload = JSON.parse(response.body) as Record<string, unknown>;
+  } catch (error) {
+    throw new ApiServiceResponseParseError(
+      apiConfig.apiUrl,
+      apiConfig.modelId,
+      truncateResponseBody(response.body),
+      t('API 服务返回内容不是合法 JSON。'),
+      { cause: error instanceof Error ? error : undefined }
+    );
+  }
+
   const content = extractApiResponseText(payload);
 
   if (!content) {
-    throw new Error(t('API 服务返回了空结果。'));
+    throw new ApiServiceEmptyResponseError(
+      apiConfig.apiUrl,
+      apiConfig.modelId,
+      truncateResponseBody(response.body),
+      t('API 服务返回了空结果。')
+    );
   }
 
   return content;
+}
+
+/**
+ * 以 Node 原生 HTTP 请求调用 API 服务。
+ * 这里绕过 VS Code 扩展宿主对 fetch 的包装，避免把底层网络错误压缩成单一的 fetch failed。
+ */
+async function sendApiServiceRequest(
+  apiConfig: ApiServiceConfig,
+  requestBody: string
+): Promise<{ statusCode: number; statusMessage: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    const requestHeaders = {
+      'Content-Type': 'application/json; charset=utf-8',
+      Accept: 'application/json, text/plain, */*',
+      Authorization: `Bearer ${apiConfig.apiKey}`,
+      'Content-Length': String(Buffer.byteLength(requestBody, 'utf8'))
+    };
+    const requestOptions: https.RequestOptions = {
+      protocol: apiConfig.requestUrl.protocol,
+      hostname: apiConfig.requestUrl.hostname,
+      port: apiConfig.requestUrl.port || undefined,
+      path: `${apiConfig.requestUrl.pathname}${apiConfig.requestUrl.search}`,
+      method: 'POST',
+      headers: requestHeaders
+    };
+    const requestFactory = apiConfig.requestUrl.protocol === 'https:' ? https.request : http.request;
+
+    infoObject('API 服务请求摘要', {
+      protocol: apiConfig.requestUrl.protocol,
+      host: apiConfig.requestUrl.host,
+      path: `${apiConfig.requestUrl.pathname}${apiConfig.requestUrl.search}`,
+      timeoutMs: API_REQUEST_TIMEOUT_MS,
+      contentLength: requestHeaders['Content-Length']
+    }, { compact: true });
+
+    const request = requestFactory(requestOptions, (response) => {
+      const responseChunks: Buffer[] = [];
+
+      response.on('data', (chunk: Buffer | string) => {
+        responseChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+
+      response.on('end', () => {
+        const body = Buffer.concat(responseChunks).toString('utf8');
+
+        resolve({
+          statusCode: response.statusCode ?? 0,
+          statusMessage: response.statusMessage ?? '',
+          body
+        });
+      });
+    });
+
+    request.setTimeout(API_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(createNetworkFailureError(apiConfig.apiUrl, apiConfig.modelId, {
+        code: 'ETIMEDOUT',
+        message: t('API 请求超时，{0}ms 内没有收到响应。', String(API_REQUEST_TIMEOUT_MS))
+      }));
+    });
+
+    request.on('error', (error: Error & {
+      code?: string;
+      cause?: {
+        code?: string;
+        message?: string;
+      };
+    }) => {
+      if (error instanceof ApiServiceNetworkError) {
+        reject(error);
+        return;
+      }
+
+      reject(createNetworkFailureError(apiConfig.apiUrl, apiConfig.modelId, error));
+    });
+
+    request.write(requestBody, 'utf8');
+    request.end();
+  });
+}
+
+/**
+ * 从底层网络异常构造统一的 API 网络错误。
+ * 这里优先提取 code 和更贴近根因的 message，避免只剩一层泛化异常。
+ */
+function createNetworkFailureError(
+  apiUrl: string,
+  modelId: string,
+  error: {
+    code?: string;
+    message?: string;
+    cause?: {
+      code?: string;
+      message?: string;
+    };
+  }
+): ApiServiceNetworkError {
+  const errorCode = readNetworkErrorCode(error);
+  const errorDetail = readNetworkErrorMessage(error);
+
+  return new ApiServiceNetworkError(
+    apiUrl,
+    modelId,
+    errorCode,
+    errorDetail,
+    { cause: error instanceof Error ? error : undefined }
+  );
+}
+
+/**
+ * 读取网络错误代码。
+ * 如果外层错误没有 code，就继续从 cause 中取。
+ */
+function readNetworkErrorCode(error: {
+  code?: string;
+  cause?: {
+    code?: string;
+  };
+}): string | undefined {
+  return error.code || error.cause?.code;
+}
+
+/**
+ * 读取更贴近根因的网络错误消息。
+ * 外层 message 不够具体时，优先使用 cause.message。
+ */
+function readNetworkErrorMessage(error: {
+  message?: string;
+  cause?: {
+    message?: string;
+  };
+}): string {
+  const causeMessage = error.cause?.message?.trim();
+
+  if (causeMessage) {
+    return causeMessage;
+  }
+
+  const directMessage = error.message?.trim();
+
+  return directMessage || t('未提供更多网络错误信息。');
+}
+
+/**
+ * 从 API 错误响应中提取更适合展示的消息。
+ * 这里兼容 message、error.message 和纯文本三种常见形式。
+ */
+function extractApiErrorMessage(responseBody: string): string {
+  const trimmedBody = responseBody.trim();
+
+  if (!trimmedBody) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(trimmedBody) as Record<string, unknown>;
+    const message = readApiErrorField(parsed);
+
+    return message || trimmedBody;
+  } catch {
+    return trimmedBody;
+  }
+}
+
+/**
+ * 从错误响应对象里提取 message。
+ */
+function readApiErrorField(payload: Record<string, unknown>): string {
+  if (typeof payload.message === 'string' && payload.message.trim()) {
+    return payload.message.trim();
+  }
+
+  if (isPlainObject(payload.error)) {
+    const nestedMessage = payload.error.message;
+
+    if (typeof nestedMessage === 'string' && nestedMessage.trim()) {
+      return nestedMessage.trim();
+    }
+  }
+
+  if (typeof payload.error === 'string' && payload.error.trim()) {
+    return payload.error.trim();
+  }
+
+  return '';
+}
+
+/**
+ * 裁剪响应正文，避免大块文本把日志和错误对象撑爆。
+ */
+function truncateResponseBody(responseBody: string, maxLength = 2000): string {
+  const normalizedBody = responseBody.trim();
+
+  if (normalizedBody.length <= maxLength) {
+    return normalizedBody;
+  }
+
+  return `${normalizedBody.slice(0, maxLength)}...`;
 }
 
 /**
@@ -644,12 +866,60 @@ function parseApiServiceConfig(rawConfig: string): ApiServiceConfig {
     throw new ApiServiceConfigError(t('API 服务配置缺少 {0}。', '模型ID'));
   }
 
+  if (apiKey === 'sk-your-key') {
+    throw new ApiServiceConfigError(t('API 密钥仍然是默认占位值，请先替换成真实密钥。'));
+  }
+
+  if (!isPlainObject(customParametersValue)) {
+    throw new ApiServiceConfigError(t('API 服务配置中的 {0} 必须是 JSON 对象。', '自定义参数'));
+  }
+
+  const requestUrl = parseApiServiceUrl(apiUrl);
+  validateApiCustomParameters(customParametersValue);
+
   return {
     apiUrl,
     apiKey,
     modelId,
-    customParameters: isPlainObject(customParametersValue) ? customParametersValue : {}
+    customParameters: customParametersValue,
+    requestUrl
   };
+}
+
+/**
+ * 把设置中的 API 地址解析成 URL。
+ * 这里只接受 http 和 https，其他协议一律视为配置错误。
+ */
+function parseApiServiceUrl(apiUrl: string): URL {
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(apiUrl);
+  } catch {
+    throw new ApiServiceConfigError(t('API 地址必须是合法的 http 或 https 地址。'));
+  }
+
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new ApiServiceConfigError(t('API 地址必须是合法的 http 或 https 地址。'));
+  }
+
+  return parsedUrl;
+}
+
+/**
+ * 校验自定义参数。
+ * 插件自己控制 model 和 messages，两者都不允许再被自定义参数覆盖。
+ */
+function validateApiCustomParameters(customParameters: Record<string, unknown>): void {
+  for (const key of RESERVED_API_PARAMETER_KEYS) {
+    if (key in customParameters) {
+      throw new ApiServiceConfigError(t('API 服务配置中的 {0} 不能覆盖 {1} 字段。', '自定义参数', key));
+    }
+  }
+
+  if (customParameters.stream === true) {
+    throw new ApiServiceConfigError(t('API 服务模式不支持 stream=true。请关闭流式输出后重试。'));
+  }
 }
 
 /**
@@ -825,8 +1095,14 @@ function parseCandidates(rawOutput: string, responseJsonSchema: ResponseJsonSche
     const parsed = JSON.parse(jsonText);
     return normalizeCandidates(parsed, responseJsonSchema);
   } catch (error) {
+    if (error instanceof AiOutputValidationError) {
+      throw error;
+    }
+
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(t('无法从 AI 输出中解析结果：{0}', reason));
+    throw new AiOutputValidationError(t('无法从 AI 输出中解析结果：{0}', reason), {
+      cause: error instanceof Error ? error : undefined
+    });
   }
 }
 
@@ -844,18 +1120,18 @@ function normalizeCandidates(
     const unexpectedRootKeys = Object.keys(root).filter((key) => key !== 'messages');
 
     if (unexpectedRootKeys.length > 0) {
-      throw new Error(t('AI 返回结果包含未允许的顶层字段：{0}', unexpectedRootKeys.join('、')));
+      throw new AiOutputValidationError(t('AI 返回结果包含未允许的顶层字段：{0}', unexpectedRootKeys.join('、')));
     }
   }
 
   const messagesValue = root.messages;
 
   if (!Array.isArray(messagesValue)) {
-    throw new Error(t('AI 返回结果缺少 messages 数组。'));
+    throw new AiOutputValidationError(t('AI 返回结果缺少 messages 数组。'));
   }
 
   if (messagesValue.length !== 3) {
-    throw new Error(t('AI 工具没有返回 3 条候选 Commit Message。'));
+    throw new AiOutputValidationError(t('AI 工具没有返回 3 条候选 Commit Message。'));
   }
 
   return messagesValue.map((message, index) => normalizeCandidate(message, index, responseJsonSchema));
@@ -876,7 +1152,9 @@ function normalizeCandidate(
     const unexpectedKeys = Object.keys(item).filter((key) => key !== 'title' && key !== 'description');
 
     if (unexpectedKeys.length > 0) {
-      throw new Error(t('AI 返回结果中的第 {0} 条候选项包含未允许字段：{1}', String(index + 1), unexpectedKeys.join('、')));
+      throw new AiOutputValidationError(
+        t('AI 返回结果中的第 {0} 条候选项包含未允许字段：{1}', String(index + 1), unexpectedKeys.join('、'))
+      );
     }
   }
 
@@ -886,11 +1164,11 @@ function normalizeCandidate(
   const normalizedDescription = normalizeMultilineText(description);
 
   if (normalizedTitle.length < responseJsonSchema.titleMinLength) {
-    throw new Error(t('AI 返回结果中的第 {0} 条候选项标题长度不足。', String(index + 1)));
+    throw new AiOutputValidationError(t('AI 返回结果中的第 {0} 条候选项标题长度不足。', String(index + 1)));
   }
 
   if (normalizedDescription.length < responseJsonSchema.descriptionMinLength) {
-    throw new Error(t('AI 返回结果中的第 {0} 条候选项描述长度不足。', String(index + 1)));
+    throw new AiOutputValidationError(t('AI 返回结果中的第 {0} 条候选项描述长度不足。', String(index + 1)));
   }
 
   return {
@@ -946,7 +1224,7 @@ function normalizeMultilineText(value: string): string {
  */
 function readCandidateObject(value: unknown, fieldPath: string): Record<string, unknown> {
   if (!isPlainObject(value)) {
-    throw new Error(t('AI 返回结果中的 {0} 必须是对象。', fieldPath));
+    throw new AiOutputValidationError(t('AI 返回结果中的 {0} 必须是对象。', fieldPath));
   }
 
   return value;
@@ -958,7 +1236,7 @@ function readCandidateObject(value: unknown, fieldPath: string): Record<string, 
  */
 function readCandidateString(value: unknown, fieldPath: string): string {
   if (typeof value !== 'string') {
-    throw new Error(t('AI 返回结果中的 {0} 必须是字符串。', fieldPath));
+    throw new AiOutputValidationError(t('AI 返回结果中的 {0} 必须是字符串。', fieldPath));
   }
 
   return value;

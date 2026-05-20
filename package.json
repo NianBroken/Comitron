@@ -2,7 +2,7 @@
   "name": "comitron",
   "displayName": "Comitron",
   "description": "%extension.description%",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "NianBroken",
   "author": "NianBroken",
   "icon": "media/icon.png",
@@ -113,7 +113,7 @@
         "comitron.promptTemplate": {
           "title": "%config.promptTemplate.title%",
           "type": "string",
-          "default": "基于下文提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n语言要求：\n- 每条候选项的 title 与 description 均必须使用{{commitLanguage}}语言输出。\n\ndescription 字段要求：\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件进行归纳，不得仅描述其中的单个文件。\n2. 必须先判断本次提交的主要目的，再据此生成候选项。\n3. title 必须使用最合适的 Conventional Commits 前缀，可选值包括但不限于 fix:、feat:、build:、chore:、ci:、docs:、style:、refactor:、perf:、test: 等。\n4. 3 条候选项必须准确描述同一组改动，但在写法上需有所区分，文字不得重复。不同候选项之间的 Conventional Commits 前缀允许重复。\n5. title 必须为单行文本，表述明确、简洁，避免空话与模糊词汇，且结尾不得使用句号。\n6. 若改动点较多，title 只概括最核心的提交目的，不得堆砌细节。\n7. 只输出合法 JSON，不得输出任何解释、代码块标记、标题或其他额外文字。\n\n返回格式：\n{\n  \"messages\": [\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}",
+          "default": "基于下文提供的全部已更改文件内容与差异，生成 3 条可以直接提交的候选 Commit Message。\n\n语言要求：\n- 所有候选 Commit 的全部文本，包括所有内容，必须统一使用{{commitLanguage}}，不得混用或输出任何其他语言。\n\ndescription 字段要求：\n{{extendedDescriptionInstruction}}\n\n执行规则：\n1. 必须综合全部已更改文件进行归纳，不得仅描述其中的单个文件。\n2. 必须先判断本次提交的主要目的，再据此生成候选项。\n3. title 必须使用最合适的 Conventional Commits 前缀，可选值包括但不限于 fix:、feat:、build:、chore:、ci:、docs:、style:、refactor:、perf:、test: 等。\n4. 3 条候选项必须准确描述同一组改动，但在写法上需有所区分，文字不得重复。不同候选项之间的 Conventional Commits 前缀允许重复。\n5. title 必须为单行文本，表述明确、简洁，避免空话与模糊词汇，且结尾不得使用句号。\n6. 若改动点较多，title 只概括最核心的提交目的，不得堆砌细节。\n7. 只输出合法 JSON，不得输出任何解释、代码块标记、标题或其他额外文字。\n8. 所有 Commit 的全部文本必须使用{{commitLanguage}}撰写，严禁输出该语言之外的任何其他语言内容。\n\n返回格式：\n{\n  \"messages\": [\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    },\n    {\n      \"title\": \"type: summary\",\n      \"description\": \"extended description\"\n    }\n  ]\n}\n\n以下是当前仓库内所有已更改文件的内容与差异：\n{{changedFiles}}",
           "editPresentation": "multilineText",
           "scope": "window",
           "order": 5,
