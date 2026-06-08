@@ -1,4 +1,10 @@
 import * as vscode from 'vscode';
+import {
+  CONTEXT_BUDGET_DEFAULT,
+  CONTEXT_BUDGET_MAX,
+  CONTEXT_BUDGET_MIN,
+  normalizeContextBudget
+} from './contextBudget';
 
 /**
  * 已知本地命令行工具的内部标识。
@@ -227,7 +233,7 @@ export function getComitronConfig(): ComitronConfig {
     responseJsonSchema: config.get<string>('responseJsonSchema', DEFAULT_RESPONSE_JSON_SCHEMA_TEXT).trim()
       || DEFAULT_RESPONSE_JSON_SCHEMA_TEXT,
     commitLanguage: config.get<string>('commitLanguage', DEFAULT_COMMIT_LANGUAGE).trim() || DEFAULT_COMMIT_LANGUAGE,
-    contextBudget: normalizeContextBudget(config.get<number>('contextBudget', 8192)),
+    contextBudget: normalizeContextBudget(config.get<number>('contextBudget', CONTEXT_BUDGET_DEFAULT)),
     includeExtendedDescription: config.get<boolean>('includeExtendedDescription', false),
     uiLanguage: config.get<string>('uiLanguage', DEFAULT_UI_LANGUAGE).trim() || DEFAULT_UI_LANGUAGE
   };
@@ -304,7 +310,4 @@ export function isLegacySelectedToolSettingValue(value: unknown): value is AiToo
  * 规范化上下文预算。
  * 这里保证预算值始终落在允许区间内，并且一定是整数。
  */
-function normalizeContextBudget(value: number): number {
-  const safeValue = Number.isFinite(value) ? Math.floor(value) : 8192;
-  return Math.min(65536, Math.max(512, safeValue));
-}
+export { CONTEXT_BUDGET_DEFAULT, CONTEXT_BUDGET_MIN, CONTEXT_BUDGET_MAX, normalizeContextBudget };

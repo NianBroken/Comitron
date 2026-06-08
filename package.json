@@ -2,7 +2,7 @@
   "name": "comitron",
   "displayName": "Comitron",
   "description": "%extension.description%",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "publisher": "NianBroken",
   "author": "NianBroken",
   "icon": "media/icon.png",
@@ -103,7 +103,7 @@
         "comitron.apiServiceJson": {
           "title": "%config.apiServiceJson.title%",
           "type": "string",
-          "default": "{\n  \"API地址\": \"https://api.openai.com/v1/chat/completions\",\n  \"API密钥\": \"sk-your-key\",\n  \"模型ID\": \"gpt-5-mini\",\n  \"自定义参数\": {\n    \"temperature\": 0.2,\n    \"top_p\": 0.9\n  }\n}",
+          "default": "{\n  \"API地址\": \"\",\n  \"API密钥\": \"\",\n  \"模型ID\": \"\",\n  \"自定义参数\": {}\n}",
           "editPresentation": "multilineText",
           "scope": "window",
           "order": 4,
@@ -172,9 +172,9 @@
         "comitron.contextBudget": {
           "title": "%config.contextBudget.title%",
           "type": "number",
-          "default": 8192,
-          "minimum": 512,
-          "maximum": 65536,
+          "default": 65536,
+          "minimum": 32768,
+          "maximum": 131072,
           "scope": "window",
           "order": 11,
           "description": "%config.contextBudget.description%",
@@ -212,6 +212,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "node ./out/test/run.js",
     "vscode:prepublish": "npm run compile",
     "package:vsix": "vsce package",
     "publish:vsce": "vsce publish"

@@ -6,6 +6,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { t } from './i18n';
 import { type ComitronConfig, type KnownAiToolName } from './config';
+import { createNonApiToolInvocationOptions, type NonApiToolInvocationOptions } from './nonApiThinking';
+import { parseApiServiceConfig as parseApiServiceConfigCore } from './apiServiceConfig';
+import { inferCustomToolKind } from './customToolKind';
 import {
   AiOutputValidationError,
   AiToolExecutionError,
@@ -92,12 +95,6 @@ const MAX_GENERATION_ATTEMPTS = 3;
  * 这里统一限制单次请求等待时间，避免网络异常时无限挂起。
  */
 const API_REQUEST_TIMEOUT_MS = 60_000;
-
-/**
- * API 请求正文里由插件自己掌控的字段。
- * 这些键不能再被自定义参数覆盖，否则请求结构会失真。
- */
-const RESERVED_API_PARAMETER_KEYS = new Set(['model', 'messages']);
 
 /**
  * 统一的候选生成入口。
@@ -298,17 +295,37 @@ async function runKnownTool(
   workingDirectory: string
 ): Promise<string> {
   info(`开始调用已知工具。tool=${toolName}，executablePath=${executablePath}`);
+  const invocationOptions = await createNonApiToolInvocationOptions(toolName);
 
   try {
     if (toolName === 'codex') {
-      return await runCodex(executablePath, prompt, toolConstraintPrompt, responseJsonSchema, workingDirectory);
+      return await runCodex(
+        executablePath,
+        prompt,
+        toolConstraintPrompt,
+        responseJsonSchema,
+        workingDirectory,
+        invocationOptions
+      );
     }
 
     if (toolName === 'claudeCode') {
-      return await runClaudeCode(executablePath, prompt, toolConstraintPrompt, workingDirectory);
+      return await runClaudeCode(
+        executablePath,
+        prompt,
+        toolConstraintPrompt,
+        workingDirectory,
+        invocationOptions
+      );
     }
 
-    return await runGeminiCli(executablePath, prompt, toolConstraintPrompt, workingDirectory);
+    return await runGeminiCli(
+      executablePath,
+      prompt,
+      toolConstraintPrompt,
+      workingDirectory,
+      invocationOptions
+    );
   } catch (error) {
     throw new AiToolExecutionError(
       KNOWN_TOOL_METADATA[toolName].label,
@@ -316,6 +333,8 @@ async function runKnownTool(
       error instanceof Error ? error.message : String(error),
       { cause: error instanceof Error ? error : undefined }
     );
+  } finally {
+    await cleanupNonApiToolInvocationOptions(toolName, invocationOptions);
   }
 }
 
@@ -328,7 +347,8 @@ async function runCodex(
   prompt: string,
   toolConstraintPrompt: string,
   responseJsonSchema: ResponseJsonSchemaConfig,
-  workingDirectory: string
+  workingDirectory: string,
+  invocationOptions: NonApiToolInvocationOptions
 ): Promise<string> {
   const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'comitron-codex-'));
   const schemaPath = path.join(tempDirectory, 'schema.json');
@@ -341,6 +361,7 @@ async function runCodex(
       workingDirectory,
       schemaPath,
       outputPath,
+      thinkingOverrideArgs: invocationOptions.args,
       responseJsonSchemaLength: responseJsonSchema.text.length
     });
 
@@ -350,7 +371,7 @@ async function runCodex(
       executablePath,
       [
         'exec',
-        '-',
+        ...invocationOptions.args,
         '--skip-git-repo-check',
         '--ephemeral',
         '--sandbox',
@@ -363,7 +384,8 @@ async function runCodex(
         outputPath
       ],
       workingDirectory,
-      finalPrompt
+      finalPrompt,
+      invocationOptions.env
     );
 
     info('Codex 执行完成，开始读取结果文件。');
@@ -382,21 +404,25 @@ async function runClaudeCode(
   executablePath: string,
   prompt: string,
   toolConstraintPrompt: string,
-  workingDirectory: string
+  workingDirectory: string,
+  invocationOptions: NonApiToolInvocationOptions
 ): Promise<string> {
   infoObject('ClaudeCode 执行参数', {
     executablePath,
-    workingDirectory
+    workingDirectory,
+    thinkingOverrideArgs: invocationOptions.args
   });
 
   const result = await runProcess(
     executablePath,
     [
+      ...invocationOptions.args,
       '-p',
       toolConstraintPrompt
     ],
     workingDirectory,
-    prompt
+    prompt,
+    invocationOptions.env
   );
 
   return result.stdout;
@@ -410,23 +436,27 @@ async function runGeminiCli(
   executablePath: string,
   prompt: string,
   toolConstraintPrompt: string,
-  workingDirectory: string
+  workingDirectory: string,
+  invocationOptions: NonApiToolInvocationOptions
 ): Promise<string> {
   infoObject('Gemini CLI 执行参数', {
     executablePath,
-    workingDirectory
+    workingDirectory,
+    thinkingOverrideArgs: invocationOptions.args
   });
 
   const result = await runProcess(
     executablePath,
     [
+      ...invocationOptions.args,
       '-p',
       toolConstraintPrompt,
       '--output-format',
       'json'
     ],
     workingDirectory,
-    prompt
+    prompt,
+    invocationOptions.env
   );
 
   const payload = JSON.parse(result.stdout) as { response?: string };
@@ -836,89 +866,14 @@ function parseResponseJsonSchema(rawSchema: string): ResponseJsonSchemaConfig {
  * 把设置页中的 API 服务 JSON 解析成结构化对象。
  * 这里固定要求 4 个键：API地址、API密钥、模型ID、自定义参数。
  */
-function parseApiServiceConfig(rawConfig: string): ApiServiceConfig {
-  if (!rawConfig.trim()) {
-    throw new ApiServiceConfigError(t('API 服务配置不能为空。'));
-  }
-
-  let parsed: Record<string, unknown>;
-
+export function parseApiServiceConfig(rawConfig: string): ApiServiceConfig {
   try {
-    parsed = JSON.parse(rawConfig) as Record<string, unknown>;
-  } catch {
-    throw new ApiServiceConfigError(t('API 服务配置不是合法 JSON。'));
-  }
-
-  const apiUrl = readStringField(parsed, ['API地址', 'apiUrl']);
-  const apiKey = readStringField(parsed, ['API密钥', 'apiKey']);
-  const modelId = readStringField(parsed, ['模型ID', 'modelId']);
-  const customParametersValue = parsed['自定义参数'] ?? parsed.customParameters ?? {};
-
-  if (!apiUrl) {
-    throw new ApiServiceConfigError(t('API 服务配置缺少 {0}。', 'API地址'));
-  }
-
-  if (!apiKey) {
-    throw new ApiServiceConfigError(t('API 服务配置缺少 {0}。', 'API密钥'));
-  }
-
-  if (!modelId) {
-    throw new ApiServiceConfigError(t('API 服务配置缺少 {0}。', '模型ID'));
-  }
-
-  if (apiKey === 'sk-your-key') {
-    throw new ApiServiceConfigError(t('API 密钥仍然是默认占位值，请先替换成真实密钥。'));
-  }
-
-  if (!isPlainObject(customParametersValue)) {
-    throw new ApiServiceConfigError(t('API 服务配置中的 {0} 必须是 JSON 对象。', '自定义参数'));
-  }
-
-  const requestUrl = parseApiServiceUrl(apiUrl);
-  validateApiCustomParameters(customParametersValue);
-
-  return {
-    apiUrl,
-    apiKey,
-    modelId,
-    customParameters: customParametersValue,
-    requestUrl
-  };
-}
-
-/**
- * 把设置中的 API 地址解析成 URL。
- * 这里只接受 http 和 https，其他协议一律视为配置错误。
- */
-function parseApiServiceUrl(apiUrl: string): URL {
-  let parsedUrl: URL;
-
-  try {
-    parsedUrl = new URL(apiUrl);
-  } catch {
-    throw new ApiServiceConfigError(t('API 地址必须是合法的 http 或 https 地址。'));
-  }
-
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    throw new ApiServiceConfigError(t('API 地址必须是合法的 http 或 https 地址。'));
-  }
-
-  return parsedUrl;
-}
-
-/**
- * 校验自定义参数。
- * 插件自己控制 model 和 messages，两者都不允许再被自定义参数覆盖。
- */
-function validateApiCustomParameters(customParameters: Record<string, unknown>): void {
-  for (const key of RESERVED_API_PARAMETER_KEYS) {
-    if (key in customParameters) {
-      throw new ApiServiceConfigError(t('API 服务配置中的 {0} 不能覆盖 {1} 字段。', '自定义参数', key));
-    }
-  }
-
-  if (customParameters.stream === true) {
-    throw new ApiServiceConfigError(t('API 服务模式不支持 stream=true。请关闭流式输出后重试。'));
+    return parseApiServiceConfigCore(rawConfig, (message, ...args) => t(message, ...args));
+  } catch (error) {
+    throw new ApiServiceConfigError(
+      error instanceof Error ? error.message : String(error),
+      { cause: error instanceof Error ? error : undefined }
+    );
   }
 }
 
@@ -968,43 +923,6 @@ function extractApiResponseText(payload: Record<string, unknown>): string {
 }
 
 /**
- * 按给定字段名顺序读取字符串字段。
- * 只返回非空字符串，空值和空白字符串都会被忽略。
- */
-function readStringField(source: Record<string, unknown>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const value = source[key];
-
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-
-  return '';
-}
-
-/**
- * 根据自定义路径文件名推断它属于哪一种已知工具。
- */
-function inferCustomToolKind(toolPath: string): KnownAiToolName | undefined {
-  const lowerCaseName = path.basename(toolPath).toLowerCase();
-
-  if (lowerCaseName.includes('codex')) {
-    return 'codex';
-  }
-
-  if (lowerCaseName.includes('claude')) {
-    return 'claudeCode';
-  }
-
-  if (lowerCaseName.includes('gemini')) {
-    return 'geminiCli';
-  }
-
-  return undefined;
-}
-
-/**
  * 判断某个路径在文件系统中是否真实存在。
  */
 async function pathExists(targetPath: string): Promise<boolean> {
@@ -1026,21 +944,23 @@ async function runProcess(
   executablePath: string,
   args: string[],
   workingDirectory: string,
-  stdinText: string
+  stdinText: string,
+  envOverrides: NodeJS.ProcessEnv = process.env
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     infoObject('启动子进程', {
       executablePath,
       args,
       workingDirectory,
-      stdinLength: stdinText.length
+      stdinLength: stdinText.length,
+      envOverrideKeys: Object.keys(envOverrides).filter((key) => process.env[key] !== envOverrides[key])
     });
 
     const child = spawn(executablePath, args, {
       cwd: workingDirectory,
       shell: process.platform === 'win32',
       windowsHide: true,
-      env: process.env
+      env: envOverrides
     });
 
     let stdout = '';
@@ -1082,6 +1002,29 @@ async function runProcess(
 
     child.stdin.end();
   });
+}
+
+/**
+ * 为非 API 服务构造本次调用专用的临时思考关闭参数。
+ * 这些参数和环境变量只注入当前子进程，不触碰用户全局配置。
+ */
+/**
+ * 清理非 API 工具调用期间生成的临时资源。
+ * 这里只处理本次插件调用自己创建的内容，不触碰任何用户全局配置。
+ */
+async function cleanupNonApiToolInvocationOptions(
+  toolName: KnownAiToolName,
+  invocationOptions: NonApiToolInvocationOptions
+): Promise<void> {
+  if (!invocationOptions.cleanup) {
+    return;
+  }
+
+  try {
+    await invocationOptions.cleanup();
+  } catch (error) {
+    warn(`清理 ${KNOWN_TOOL_METADATA[toolName].label} 临时资源失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /**

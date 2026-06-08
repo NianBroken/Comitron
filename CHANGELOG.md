@@ -1,5 +1,19 @@
 # 更改日志
 
+## [1.0.6] - 2026-06-08
+
+### Changed
+
+- 新增 `nonApiThinking.ts`，为 Codex、Claude Code、Gemini CLI 分别构造临时关闭思考的参数与环境变量
+- 重构 `toolRunner.ts`，将思考覆盖参数注入到各已知工具的子进程调用中
+- 新增 `customToolKind.ts`，根据文件名推断自定义工具所属类型
+- 新增 `apiServiceConfig.ts`，将 API 服务配置解析逻辑抽取为独立模块并支持翻译函数注入
+- 新增 `contextBudget.ts`，统一管理 Context Budget 的默认值与取值范围
+- 更新 `config.ts` 引用新的 Context Budget 常量
+- 调整 `package.json` 中 `contextBudget` 默认值、最小值和最大值
+- 更新 `package.json` 中 `apiServiceJson` 默认值为空配置
+- 新增 `src/test/run.ts` 验证脚本，覆盖关键配置与调用参数
+
 ## [1.0.5] - 2026-05-20
 
 ### Changed
