@@ -7,13 +7,10 @@ package-lock.json
 .npmrc
 .vscodeignore
 *.vsix
-.vscode-test/**
-tmp-e2e/**
 out/**/*.map
 .gitignore
 *.log
 *.tsbuildinfo
-coverage/**
 Thumbs.db
 Desktop.ini
 yarn-debug.log*

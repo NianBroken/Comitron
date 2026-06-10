@@ -1,5 +1,13 @@
 # 更改日志
 
+## [1.0.7] - 2026-06-10
+
+### Changed
+
+- 将生成逻辑抽取为独立的 runGenerationFlow 函数，避免进度通知被用户交互弹窗阻塞
+- 新增 PostProgressNotification 接口，统一管理进度结束后需展示的提示信息
+- 删除 src/test/run.ts 自动化测试脚本及对应的 npm test 命令
+
 ## [1.0.6] - 2026-06-08
 
 ### Changed

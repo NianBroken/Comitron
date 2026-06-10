@@ -20,6 +20,26 @@ interface CandidateSession {
   includeExtendedDescription: boolean;
 }
 
+/**
+ * 进度通知结束后需要补发给用户的提示。
+ * 这里把提示级别、文案和是否展示日志统一收口，避免流程中途直接弹窗拖住进度通知。
+ */
+interface PostProgressNotification {
+  level: 'info' | 'error';
+  message: string;
+  revealLogger?: boolean;
+}
+
+/**
+ * 单次生成流程执行完成后的统一结果。
+ * completed 只表示候选生成流程是否真正完成，不等同于是否已经给用户展示了提示。
+ */
+interface GenerationFlowOutcome {
+  completed: boolean;
+  completionMessage?: string;
+  notification?: PostProgressNotification;
+}
+
 let settingsManager: SettingsManager | undefined;
 let candidateViewProvider: CandidateViewProvider | undefined;
 let candidateSession: CandidateSession | undefined;
@@ -113,121 +133,27 @@ async function reportGenerationProgress(
 async function handleGenerateCommitMessages(): Promise<void> {
   const startedAt = captureMonotonicTimestamp();
   let generationCompleted = false;
-  let completionMessage: string | undefined;
 
   try {
     info('开始执行 Commit Message 生成流程。');
-    generationCompleted = await vscode.window.withProgress(
+    const outcome = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         cancellable: false
       },
-      async (progress): Promise<boolean> => {
-        await reportGenerationProgress(progress, '已收到生成请求，正在检查仓库状态...');
-
-        const gitApi = await getGitApi();
-
-        if (!gitApi) {
-          warn('未找到 VSCode 内置 Git 扩展。');
-          await showLoggedErrorMessage(t('找不到 Git 扩展，请确认 VSCode 已启用内置 Git 功能。'));
-          showLogger(false);
-          return false;
-        }
-
-        const repository = selectRepository(gitApi.repositories);
-
-        if (!repository) {
-          warn('当前工作区没有可用 Git 仓库。');
-          await showLoggedErrorMessage(t('当前工作区没有可用的 Git 仓库。'));
-          showLogger(false);
-          return false;
-        }
-
-        info(`当前操作仓库：${repository.rootUri.fsPath}`);
-        await reportGenerationProgress(progress, '正在检查当前仓库是否已有提交记录...');
-        const repositoryHistoryState = await getRepositoryHistoryState(repository.rootUri.fsPath);
-        info(`当前仓库提交历史状态：${repositoryHistoryState}`);
-
-        if (repositoryHistoryState === 'initialCommit') {
-          await reportGenerationProgress(progress, '检测到当前仓库还没有提交记录，正在自动填入 Initial commit...');
-          await handleInitialCommitScenario(repository);
-          completionMessage = t('当前仓库还没有任何提交记录，已自动填入 Initial commit。');
-          return true;
-        }
-
-        await reportGenerationProgress(progress, '正在收集 Git 差异...');
-        const changes = await collectChangedFiles(repository);
-        info(`检测到已更改文件数量：${changes.length}`);
-        infoObject('已更改文件列表', changes.map((change) => ({
-          文件: change.relativePath,
-          状态: change.scopes
-        })), { compact: true });
-
-        if (changes.length === 0) {
-          warn('仓库中没有已更改文件，生成流程结束。');
-          await showLoggedInformationMessage(t('当前仓库没有检测到已更改的文件。'));
-          return false;
-        }
-
-        const config = getComitronConfig();
-        infoObject('当前生成配置', {
-          selectedTool: config.selectedTool,
-          toolPath: config.toolPath || '[空]',
-          commitLanguage: config.commitLanguage,
-          includeExtendedDescription: config.includeExtendedDescription,
-          uiLanguage: config.uiLanguage,
-          promptLength: config.promptTemplate.length,
-          toolResponsePromptLength: config.toolResponsePromptTemplate.length,
-          responseJsonSchemaLength: config.responseJsonSchema.length
-        });
-
-        await reportGenerationProgress(progress, '正在整理主 Prompt 上下文...');
-        const promptHeader = buildPromptTemplate(
-          config.promptTemplate,
-          config.commitLanguage,
-          config.includeExtendedDescription,
-          config.extendedDescriptionEnabledPrompt,
-          config.extendedDescriptionDisabledPrompt,
-          ''
-        );
-        const promptBudget = Math.max(0, config.contextBudget - promptHeader.length);
-        info(`本次主 Prompt 可用于差异上下文的预算：${promptBudget}`);
-
-        const promptContext = buildPromptContext(changes, promptBudget);
-        const prompt = buildPromptTemplate(
-          config.promptTemplate,
-          config.commitLanguage,
-          config.includeExtendedDescription,
-          config.extendedDescriptionEnabledPrompt,
-          config.extendedDescriptionDisabledPrompt,
-          promptContext.text
-        );
-
-        info(`首轮主 Prompt 长度：${prompt.length}`);
-
-        await reportGenerationProgress(progress, '正在调用 AI 生成候选 Commit Message...');
-
-        info(`准备向 AI 发送消息。前置准备耗时：${formatElapsedDuration(measureElapsedMilliseconds(startedAt))}`);
-        info('开始调用 AI 工具。');
-        const candidates = await generateCommitMessageCandidates(prompt, repository.rootUri.fsPath, config);
-        infoObject('AI 返回候选项', candidates);
-
-        candidateSession = {
-          repository,
-          candidates,
-          includeExtendedDescription: config.includeExtendedDescription
-        };
-
-        await reportGenerationProgress(progress, '正在更新候选列表...');
-        await candidateViewProvider?.showCandidates(candidates, config.includeExtendedDescription);
-        info('候选项已写入 SCM 面板视图。');
-        return true;
-      }
+      async (progress): Promise<GenerationFlowOutcome> => runGenerationFlow(progress, startedAt)
     );
+
+    generationCompleted = outcome.completed;
+
+    if (outcome.notification) {
+      await showPostProgressNotification(outcome.notification);
+      return;
+    }
 
     if (generationCompleted) {
       await showLoggedInformationMessage(
-        completionMessage ?? t('候选 Commit Message 已更新，请在源代码管理面板中选择。')
+        outcome.completionMessage ?? t('候选 Commit Message 已更新，请在源代码管理面板中选择。')
       );
     }
   } catch (error) {
@@ -239,6 +165,136 @@ async function handleGenerateCommitMessages(): Promise<void> {
   } finally {
     info(`Commit Message 生成流程结束。结果：${generationCompleted ? '成功' : '未完成'}。总耗时：${formatElapsedDuration(measureElapsedMilliseconds(startedAt))}`);
   }
+}
+
+/**
+ * 在统一进度通知里执行完整生成逻辑。
+ * 这里绝不直接等待用户交互型提示，确保进度通知一定在实际工作完成后立即结束。
+ */
+async function runGenerationFlow(
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  startedAt: bigint
+): Promise<GenerationFlowOutcome> {
+  await reportGenerationProgress(progress, '已收到生成请求，正在检查仓库状态...');
+
+  const gitApi = await getGitApi();
+
+  if (!gitApi) {
+    warn('未找到 VSCode 内置 Git 扩展。');
+    return {
+      completed: false,
+      notification: {
+        level: 'error',
+        message: t('找不到 Git 扩展，请确认 VSCode 已启用内置 Git 功能。'),
+        revealLogger: true
+      }
+    };
+  }
+
+  const repository = selectRepository(gitApi.repositories);
+
+  if (!repository) {
+    warn('当前工作区没有可用 Git 仓库。');
+    return {
+      completed: false,
+      notification: {
+        level: 'error',
+        message: t('当前工作区没有可用的 Git 仓库。'),
+        revealLogger: true
+      }
+    };
+  }
+
+  info(`当前操作仓库：${repository.rootUri.fsPath}`);
+  await reportGenerationProgress(progress, '正在检查当前仓库是否已有提交记录...');
+  const repositoryHistoryState = await getRepositoryHistoryState(repository.rootUri.fsPath);
+  info(`当前仓库提交历史状态：${repositoryHistoryState}`);
+
+  if (repositoryHistoryState === 'initialCommit') {
+    await reportGenerationProgress(progress, '检测到当前仓库还没有提交记录，正在自动填入 Initial commit...');
+    await handleInitialCommitScenario(repository);
+
+    return {
+      completed: true,
+      completionMessage: t('当前仓库还没有任何提交记录，已自动填入 Initial commit。')
+    };
+  }
+
+  await reportGenerationProgress(progress, '正在收集 Git 差异...');
+  const changes = await collectChangedFiles(repository);
+  info(`检测到已更改文件数量：${changes.length}`);
+  infoObject('已更改文件列表', changes.map((change) => ({
+    文件: change.relativePath,
+    状态: change.scopes
+  })), { compact: true });
+
+  if (changes.length === 0) {
+    warn('仓库中没有已更改文件，生成流程结束。');
+    return {
+      completed: false,
+      notification: {
+        level: 'info',
+        message: t('当前仓库没有检测到已更改的文件。')
+      }
+    };
+  }
+
+  const config = getComitronConfig();
+  infoObject('当前生成配置', {
+    selectedTool: config.selectedTool,
+    toolPath: config.toolPath || '[空]',
+    commitLanguage: config.commitLanguage,
+    includeExtendedDescription: config.includeExtendedDescription,
+    uiLanguage: config.uiLanguage,
+    promptLength: config.promptTemplate.length,
+    toolResponsePromptLength: config.toolResponsePromptTemplate.length,
+    responseJsonSchemaLength: config.responseJsonSchema.length
+  });
+
+  await reportGenerationProgress(progress, '正在整理主 Prompt 上下文...');
+  const promptHeader = buildPromptTemplate(
+    config.promptTemplate,
+    config.commitLanguage,
+    config.includeExtendedDescription,
+    config.extendedDescriptionEnabledPrompt,
+    config.extendedDescriptionDisabledPrompt,
+    ''
+  );
+  const promptBudget = Math.max(0, config.contextBudget - promptHeader.length);
+  info(`本次主 Prompt 可用于差异上下文的预算：${promptBudget}`);
+
+  const promptContext = buildPromptContext(changes, promptBudget);
+  const prompt = buildPromptTemplate(
+    config.promptTemplate,
+    config.commitLanguage,
+    config.includeExtendedDescription,
+    config.extendedDescriptionEnabledPrompt,
+    config.extendedDescriptionDisabledPrompt,
+    promptContext.text
+  );
+
+  info(`首轮主 Prompt 长度：${prompt.length}`);
+
+  await reportGenerationProgress(progress, '正在调用 AI 生成候选 Commit Message...');
+
+  info(`准备向 AI 发送消息。前置准备耗时：${formatElapsedDuration(measureElapsedMilliseconds(startedAt))}`);
+  info('开始调用 AI 工具。');
+  const candidates = await generateCommitMessageCandidates(prompt, repository.rootUri.fsPath, config);
+  infoObject('AI 返回候选项', candidates);
+
+  candidateSession = {
+    repository,
+    candidates,
+    includeExtendedDescription: config.includeExtendedDescription
+  };
+
+  await reportGenerationProgress(progress, '正在更新候选列表...');
+  await candidateViewProvider?.showCandidates(candidates, config.includeExtendedDescription);
+  info('候选项已写入 SCM 面板视图。');
+
+  return {
+    completed: true
+  };
 }
 
 /**
@@ -403,6 +459,25 @@ async function showLoggedInformationMessage(message: string, ...actions: string[
   });
 
   return vscode.window.showInformationMessage(message, ...actions);
+}
+
+/**
+ * 统一在进度通知结束后再展示结果提示。
+ * 这样可以保证“正在收集 Git 差异...”只覆盖真实工作阶段，不会和后续提示互相叠住。
+ */
+async function showPostProgressNotification(notification: PostProgressNotification): Promise<void> {
+  infoObject('进度结束后的提示', notification, { compact: true });
+
+  if (notification.level === 'error') {
+    if (notification.revealLogger) {
+      showLogger(false);
+    }
+
+    await showLoggedErrorMessage(notification.message);
+    return;
+  }
+
+  await showLoggedInformationMessage(notification.message);
 }
 
 /**
