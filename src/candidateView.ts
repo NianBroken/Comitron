@@ -80,6 +80,19 @@ export class CandidateViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * 清空候选面板状态，并立即把视图恢复为空状态。
+   */
+  clearCandidates(): void {
+    this.state = {
+      candidates: [],
+      includeExtendedDescription: false,
+      selectedIndex: undefined
+    };
+
+    this.render();
+  }
+
+  /**
    * 标记当前已被用户应用的候选项。
    * 这个状态只用于面板内的视觉高亮。
    */

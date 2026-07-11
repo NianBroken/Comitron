@@ -43,6 +43,7 @@ interface GenerationFlowOutcome {
 let settingsManager: SettingsManager | undefined;
 let candidateViewProvider: CandidateViewProvider | undefined;
 let candidateSession: CandidateSession | undefined;
+let activeGenerationRequestId = 0;
 
 /**
  * 首次提交场景下固定回填的 Commit Message。
@@ -101,7 +102,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     'comitron.generateCommitMessages',
     async () => {
       info('收到 AI生成 命令。');
-      await handleGenerateCommitMessages();
+      const generationRequestId = beginGenerationRequest();
+      await handleGenerateCommitMessages(generationRequestId);
     }
   );
 
@@ -130,7 +132,7 @@ async function reportGenerationProgress(
  * 执行完整的 Commit Message 生成流程。
  * 这里按顺序完成仓库选择、文件收集、Prompt 组装、AI 调用和候选面板刷新。
  */
-async function handleGenerateCommitMessages(): Promise<void> {
+async function handleGenerateCommitMessages(generationRequestId: number): Promise<void> {
   const startedAt = captureMonotonicTimestamp();
   let generationCompleted = false;
 
@@ -141,8 +143,13 @@ async function handleGenerateCommitMessages(): Promise<void> {
         location: vscode.ProgressLocation.Notification,
         cancellable: false
       },
-      async (progress): Promise<GenerationFlowOutcome> => runGenerationFlow(progress, startedAt)
+      async (progress): Promise<GenerationFlowOutcome> => runGenerationFlow(progress, startedAt, generationRequestId)
     );
+
+    if (!isActiveGenerationRequest(generationRequestId)) {
+      info(`生成请求已过期，不展示结果提示。请求：${generationRequestId}，当前：${activeGenerationRequestId}`);
+      return;
+    }
 
     generationCompleted = outcome.completed;
 
@@ -157,6 +164,11 @@ async function handleGenerateCommitMessages(): Promise<void> {
       );
     }
   } catch (error) {
+    if (!isActiveGenerationRequest(generationRequestId)) {
+      info(`过期生成请求发生错误，已跳过用户提示。请求：${generationRequestId}，当前：${activeGenerationRequestId}`);
+      return;
+    }
+
     const userFacingError = toUserFacingError(error);
     logError(`生成流程失败。分类：${userFacingError.kind}`, error);
     infoObject('本次面向用户的错误提示', userFacingError);
@@ -173,11 +185,18 @@ async function handleGenerateCommitMessages(): Promise<void> {
  */
 async function runGenerationFlow(
   progress: vscode.Progress<{ message?: string; increment?: number }>,
-  startedAt: bigint
+  startedAt: bigint,
+  generationRequestId: number
 ): Promise<GenerationFlowOutcome> {
   await reportGenerationProgress(progress, '已收到生成请求，正在检查仓库状态...');
 
   const gitApi = await getGitApi();
+
+  if (!shouldContinueGenerationRequest(generationRequestId, 'Git 扩展检查')) {
+    return {
+      completed: false
+    };
+  }
 
   if (!gitApi) {
     warn('未找到 VSCode 内置 Git 扩展。');
@@ -192,6 +211,12 @@ async function runGenerationFlow(
   }
 
   const repository = selectRepository(gitApi.repositories);
+
+  if (!shouldContinueGenerationRequest(generationRequestId, '仓库选择')) {
+    return {
+      completed: false
+    };
+  }
 
   if (!repository) {
     warn('当前工作区没有可用 Git 仓库。');
@@ -210,9 +235,21 @@ async function runGenerationFlow(
   const repositoryHistoryState = await getRepositoryHistoryState(repository.rootUri.fsPath);
   info(`当前仓库提交历史状态：${repositoryHistoryState}`);
 
+  if (!shouldContinueGenerationRequest(generationRequestId, '提交历史检查')) {
+    return {
+      completed: false
+    };
+  }
+
   if (repositoryHistoryState === 'initialCommit') {
     await reportGenerationProgress(progress, '检测到当前仓库还没有提交记录，正在自动填入 Initial commit...');
-    await handleInitialCommitScenario(repository);
+    const handled = await handleInitialCommitScenario(repository, generationRequestId);
+
+    if (!handled) {
+      return {
+        completed: false
+      };
+    }
 
     return {
       completed: true,
@@ -227,6 +264,12 @@ async function runGenerationFlow(
     文件: change.relativePath,
     状态: change.scopes
   })), { compact: true });
+
+  if (!shouldContinueGenerationRequest(generationRequestId, 'Git 差异收集')) {
+    return {
+      completed: false
+    };
+  }
 
   if (changes.length === 0) {
     warn('仓库中没有已更改文件，生成流程结束。');
@@ -282,19 +325,76 @@ async function runGenerationFlow(
   const candidates = await generateCommitMessageCandidates(prompt, repository.rootUri.fsPath, config);
   infoObject('AI 返回候选项', candidates);
 
+  if (!shouldContinueGenerationRequest(generationRequestId, 'AI 候选结果返回')) {
+    return {
+      completed: false
+    };
+  }
+
+  await reportGenerationProgress(progress, '正在更新候选列表...');
+
+  if (!shouldContinueGenerationRequest(generationRequestId, '候选列表更新')) {
+    return {
+      completed: false
+    };
+  }
+
   candidateSession = {
     repository,
     candidates,
     includeExtendedDescription: config.includeExtendedDescription
   };
 
-  await reportGenerationProgress(progress, '正在更新候选列表...');
   await candidateViewProvider?.showCandidates(candidates, config.includeExtendedDescription);
+
+  if (!shouldContinueGenerationRequest(generationRequestId, '候选视图刷新')) {
+    return {
+      completed: false
+    };
+  }
+
   info('候选项已写入 SCM 面板视图。');
 
   return {
     completed: true
   };
+}
+
+/**
+ * 开始一次生成请求，并清空上一轮候选状态。
+ */
+function beginGenerationRequest(): number {
+  activeGenerationRequestId += 1;
+  const generationRequestId = activeGenerationRequestId;
+  const previousSession = candidateSession;
+
+  candidateSession = undefined;
+  candidateViewProvider?.clearCandidates();
+  clearCommitInputBoxIfMatchesPreviousCandidate(previousSession);
+
+  info(`生成请求已开始，候选状态已清空。请求：${generationRequestId}`);
+
+  return generationRequestId;
+}
+
+/**
+ * 判断生成请求是否仍是当前请求。
+ */
+function isActiveGenerationRequest(generationRequestId: number): boolean {
+  return generationRequestId === activeGenerationRequestId;
+}
+
+/**
+ * 过期生成请求不能继续写入候选、输入框或结果提示。
+ */
+function shouldContinueGenerationRequest(generationRequestId: number, stage: string): boolean {
+  if (isActiveGenerationRequest(generationRequestId)) {
+    return true;
+  }
+
+  info(`生成请求已过期，跳过后续处理。阶段：${stage}。请求：${generationRequestId}，当前：${activeGenerationRequestId}`);
+
+  return false;
 }
 
 /**
@@ -373,7 +473,11 @@ function formatCommitMessage(candidate: CommitMessageCandidate, includeExtendedD
  * 处理没有任何提交记录的首次提交场景。
  * 这里直接写入固定 Commit Message，不再进入 AI 生成分支。
  */
-async function handleInitialCommitScenario(repository: Repository): Promise<void> {
+async function handleInitialCommitScenario(repository: Repository, generationRequestId: number): Promise<boolean> {
+  if (!shouldContinueGenerationRequest(generationRequestId, '首次提交处理')) {
+    return false;
+  }
+
   const initialCommitCandidate: CommitMessageCandidate = {
     title: INITIAL_COMMIT_MESSAGE,
     description: ''
@@ -392,8 +496,36 @@ async function handleInitialCommitScenario(repository: Repository): Promise<void
   };
 
   await candidateViewProvider?.showCandidates([initialCommitCandidate], false);
+
+  if (!shouldContinueGenerationRequest(generationRequestId, '首次提交候选视图刷新')) {
+    return false;
+  }
+
   candidateViewProvider?.setSelectedCandidate(0);
   await writeCommitMessageToInputBox(repository, INITIAL_COMMIT_MESSAGE);
+
+  return true;
+}
+
+/**
+ * 当 Git 输入框仍保持上一轮候选内容时，清空这条可复用的旧消息。
+ */
+function clearCommitInputBoxIfMatchesPreviousCandidate(previousSession: CandidateSession | undefined): void {
+  if (!previousSession) {
+    return;
+  }
+
+  const previousMessages = new Set(previousSession.candidates.map((candidate) => (
+    formatCommitMessage(candidate, previousSession.includeExtendedDescription)
+  )));
+
+  if (!previousMessages.has(previousSession.repository.inputBox.value)) {
+    info('Git 输入框内容不等于上一轮候选，保留当前输入内容。');
+    return;
+  }
+
+  previousSession.repository.inputBox.value = '';
+  info('Git 输入框中的上一轮候选内容已清空。');
 }
 
 /**
