@@ -1,5 +1,11 @@
 # 更改日志
 
+## [1.0.8] - 2026-07-11
+
+- 新增 activeGenerationRequestId 全局变量，用于追踪当前活跃的生成请求
+- 在生成流程各关键阶段检查请求是否过期，避免旧请求覆盖结果
+- 新增 beginGenerationRequest、isActiveGenerationRequest、shouldContinueGenerationRequest 辅助函数
+
 ## [1.0.7] - 2026-06-10
 
 ### Changed
