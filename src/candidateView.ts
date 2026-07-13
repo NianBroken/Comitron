@@ -1,4 +1,13 @@
 import * as vscode from 'vscode';
+import {
+  createCandidateBatchViewState,
+  createErrorCandidateViewState,
+  createGeneratingCandidateViewState,
+  createInitialCandidateViewState,
+  createNoticeCandidateViewState,
+  markCandidateBatchUsed,
+  type CandidateViewState
+} from './candidateViewState';
 import { getCurrentLanguage, t } from './i18n';
 import type { CommitMessageCandidate } from './toolRunner';
 
@@ -11,16 +20,6 @@ export interface CandidateSelectionContext {
 }
 
 /**
- * 候选面板当前显示状态。
- * 这里保存候选数据、Commit 描述开关和当前已选中的候选索引。
- */
-interface CandidateViewState {
-  candidates: CommitMessageCandidate[];
-  includeExtendedDescription: boolean;
-  selectedIndex: number | undefined;
-}
-
-/**
  * SCM 面板中的候选项视图提供者。
  * 负责生成 Webview 内容，并把按钮点击事件转回扩展命令侧。
  */
@@ -28,11 +27,7 @@ export class CandidateViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'comitron.candidatesView';
 
   private view: vscode.WebviewView | undefined;
-  private state: CandidateViewState = {
-    candidates: [],
-    includeExtendedDescription: false,
-    selectedIndex: undefined
-  };
+  private state: CandidateViewState = createInitialCandidateViewState();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -63,44 +58,51 @@ export class CandidateViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * 用最新候选数据刷新面板。
-   * 每次重新生成候选项时，已选中状态会被清空。
+   * 每次重新生成候选项时，新批次都会恢复为未使用状态。
    */
   async showCandidates(
-    candidates: CommitMessageCandidate[],
+    candidates: readonly CommitMessageCandidate[],
     includeExtendedDescription: boolean
   ): Promise<void> {
-    this.state = {
-      candidates,
-      includeExtendedDescription,
-      selectedIndex: undefined
-    };
+    this.state = createCandidateBatchViewState(candidates, includeExtendedDescription);
 
     await vscode.commands.executeCommand('workbench.view.scm');
     this.render();
   }
 
   /**
-   * 清空候选面板状态，并立即把视图恢复为空状态。
+   * 显示当前生成阶段，并清空上一批候选内容。
    */
-  clearCandidates(): void {
-    this.state = {
-      candidates: [],
-      includeExtendedDescription: false,
-      selectedIndex: undefined
-    };
+  showGenerationStatus(message: string): void {
+    this.state = createGeneratingCandidateViewState(message);
 
     this.render();
   }
 
   /**
-   * 标记当前已被用户应用的候选项。
-   * 这个状态只用于面板内的视觉高亮。
+   * 显示生成流程未提供候选时的普通提示。
    */
-  setSelectedCandidate(index: number): void {
-    this.state = {
-      ...this.state,
-      selectedIndex: index
-    };
+  showNotice(message: string): void {
+    this.state = createNoticeCandidateViewState(message);
+
+    this.render();
+  }
+
+  /**
+   * 显示生成失败后的状态。
+   */
+  showError(message: string): void {
+    this.state = createErrorCandidateViewState(message);
+
+    this.render();
+  }
+
+  /**
+   * 标记当前候选批次已经被使用。
+   * 整批候选会统一变为灰暗样式，但保留再次写入输入框的能力。
+   */
+  markCurrentBatchUsed(): void {
+    this.state = markCandidateBatchUsed(this.state);
 
     this.render();
   }
@@ -175,12 +177,20 @@ function getHtml(
 
 /**
  * 根据当前状态拼装候选面板主体内容。
- * 无候选项时显示空状态，有候选项时按卡片形式逐条渲染。
+ * 无候选项时按状态显示提示，有候选项时按卡片形式逐条渲染。
  */
 function getInlineScript(state: CandidateViewState): { body: string } {
   if (state.candidates.length === 0) {
+    const status = state.status ?? createInitialCandidateViewState().status;
+
+    if (!status) {
+      return {
+        body: ''
+      };
+    }
+
     return {
-      body: `<div class="empty-state">${t('当前没有候选 Commit Message。点击源代码管理面板右上角的 AI生成 按钮开始生成。')}</div>`
+      body: `<div class="status-message status-${status.kind}" role="status" aria-live="polite">${escapeHtml(t(status.message))}</div>`
     };
   }
 
@@ -192,10 +202,8 @@ function getInlineScript(state: CandidateViewState): { body: string } {
       `
       : '';
 
-    const selectedClass = state.selectedIndex === index ? ' selected' : '';
-
     return `
-      <section class="candidate-card${selectedClass}">
+      <section class="candidate-card">
         <div class="section-header">
           <div class="section-label">${t('Commit 标题')}</div>
           <button class="apply-button" data-candidate-index="${index}">${t('使用这条')}</button>
@@ -207,7 +215,7 @@ function getInlineScript(state: CandidateViewState): { body: string } {
   }).join('');
 
   return {
-    body: `<main class="candidate-list">${candidateCards}</main>`
+    body: `<main class="candidate-list${state.batchUsed ? ' batch-used' : ''}">${candidateCards}</main>`
   };
 }
 

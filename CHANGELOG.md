@@ -1,5 +1,13 @@
 # 更改日志
 
+## [1.0.9] - 2026-07-13
+
+- 新增 `candidateViewState.ts`，定义候选面板的完整运行时状态类型及工厂函数
+- 将候选面板状态从单一接口扩展为包含 `initial`、`generating`、`notice`、`error` 四种状态
+- 更新 `candidateView.ts`，使用新的状态管理，移除旧的 `selectedIndex` 逻辑
+- 新增 `showGenerationStatus`、`showNotice`、`showError` 方法，替代原有的 `clearCandidates`
+- 引入 `batchUsed` 标记，整批候选使用后统一变灰，保留再次写入能力
+
 ## [1.0.8] - 2026-07-11
 
 - 新增 activeGenerationRequestId 全局变量，用于追踪当前活跃的生成请求

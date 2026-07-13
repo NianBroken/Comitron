@@ -52,6 +52,12 @@ let activeGenerationRequestId = 0;
 const INITIAL_COMMIT_MESSAGE = 'Initial commit';
 
 /**
+ * 候选面板在生成流程发生未预期异常时显示的固定状态文案。
+ * 详细错误仍通过错误通知和日志提供，避免把内部错误直接写入 Webview。
+ */
+const GENERATION_FAILURE_VIEW_MESSAGE = '生成 Commit Message 失败，请查看错误提示后重试。';
+
+/**
  * 扩展入口。
  * 这里完成三件事：
  * 1. 初始化设置联动；
@@ -87,14 +93,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       info('检测到 Ui Language 已变化，准备立即刷新运行时界面文本。');
 
-      if (candidateSession) {
-        await candidateViewProvider?.showCandidates(
-          candidateSession.candidates,
-          candidateSession.includeExtendedDescription
-        );
-      } else {
-        candidateViewProvider?.refresh();
-      }
+      candidateViewProvider?.refresh();
     })
   );
 
@@ -117,8 +116,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  */
 async function reportGenerationProgress(
   progress: vscode.Progress<{ message?: string; increment?: number }>,
-  message: string
+  message: string,
+  generationRequestId: number
 ): Promise<void> {
+  if (!isActiveGenerationRequest(generationRequestId)) {
+    return;
+  }
+
+  candidateViewProvider?.showGenerationStatus(message);
   progress.report({
     message: t(message)
   });
@@ -154,6 +159,12 @@ async function handleGenerateCommitMessages(generationRequestId: number): Promis
     generationCompleted = outcome.completed;
 
     if (outcome.notification) {
+      if (outcome.notification.level === 'error') {
+        candidateViewProvider?.showError(outcome.notification.message);
+      } else {
+        candidateViewProvider?.showNotice(outcome.notification.message);
+      }
+
       await showPostProgressNotification(outcome.notification);
       return;
     }
@@ -172,6 +183,7 @@ async function handleGenerateCommitMessages(generationRequestId: number): Promis
     const userFacingError = toUserFacingError(error);
     logError(`生成流程失败。分类：${userFacingError.kind}`, error);
     infoObject('本次面向用户的错误提示', userFacingError);
+    candidateViewProvider?.showError(GENERATION_FAILURE_VIEW_MESSAGE);
     showLogger(false);
     await handleError(userFacingError);
   } finally {
@@ -188,7 +200,7 @@ async function runGenerationFlow(
   startedAt: bigint,
   generationRequestId: number
 ): Promise<GenerationFlowOutcome> {
-  await reportGenerationProgress(progress, '已收到生成请求，正在检查仓库状态...');
+  await reportGenerationProgress(progress, '正在检查仓库状态...', generationRequestId);
 
   const gitApi = await getGitApi();
 
@@ -204,7 +216,7 @@ async function runGenerationFlow(
       completed: false,
       notification: {
         level: 'error',
-        message: t('找不到 Git 扩展，请确认 VSCode 已启用内置 Git 功能。'),
+        message: '找不到 Git 扩展，请确认 VSCode 已启用内置 Git 功能。',
         revealLogger: true
       }
     };
@@ -224,14 +236,14 @@ async function runGenerationFlow(
       completed: false,
       notification: {
         level: 'error',
-        message: t('当前工作区没有可用的 Git 仓库。'),
+        message: '当前工作区没有可用的 Git 仓库。',
         revealLogger: true
       }
     };
   }
 
   info(`当前操作仓库：${repository.rootUri.fsPath}`);
-  await reportGenerationProgress(progress, '正在检查当前仓库是否已有提交记录...');
+  await reportGenerationProgress(progress, '正在检查当前仓库是否已有提交记录...', generationRequestId);
   const repositoryHistoryState = await getRepositoryHistoryState(repository.rootUri.fsPath);
   info(`当前仓库提交历史状态：${repositoryHistoryState}`);
 
@@ -242,7 +254,7 @@ async function runGenerationFlow(
   }
 
   if (repositoryHistoryState === 'initialCommit') {
-    await reportGenerationProgress(progress, '检测到当前仓库还没有提交记录，正在自动填入 Initial commit...');
+    await reportGenerationProgress(progress, '检测到当前仓库还没有提交记录，正在自动填入 Initial commit...', generationRequestId);
     const handled = await handleInitialCommitScenario(repository, generationRequestId);
 
     if (!handled) {
@@ -257,7 +269,7 @@ async function runGenerationFlow(
     };
   }
 
-  await reportGenerationProgress(progress, '正在收集 Git 差异...');
+  await reportGenerationProgress(progress, '正在收集 Git 差异...', generationRequestId);
   const changes = await collectChangedFiles(repository);
   info(`检测到已更改文件数量：${changes.length}`);
   infoObject('已更改文件列表', changes.map((change) => ({
@@ -277,7 +289,7 @@ async function runGenerationFlow(
       completed: false,
       notification: {
         level: 'info',
-        message: t('当前仓库没有检测到已更改的文件。')
+        message: '当前仓库没有检测到已更改的文件。'
       }
     };
   }
@@ -294,7 +306,7 @@ async function runGenerationFlow(
     responseJsonSchemaLength: config.responseJsonSchema.length
   });
 
-  await reportGenerationProgress(progress, '正在整理主 Prompt 上下文...');
+  await reportGenerationProgress(progress, '正在整理主 Prompt 上下文...', generationRequestId);
   const promptHeader = buildPromptTemplate(
     config.promptTemplate,
     config.commitLanguage,
@@ -318,7 +330,7 @@ async function runGenerationFlow(
 
   info(`首轮主 Prompt 长度：${prompt.length}`);
 
-  await reportGenerationProgress(progress, '正在调用 AI 生成候选 Commit Message...');
+  await reportGenerationProgress(progress, '正在调用 AI 生成候选 Commit Message...', generationRequestId);
 
   info(`准备向 AI 发送消息。前置准备耗时：${formatElapsedDuration(measureElapsedMilliseconds(startedAt))}`);
   info('开始调用 AI 工具。');
@@ -331,7 +343,7 @@ async function runGenerationFlow(
     };
   }
 
-  await reportGenerationProgress(progress, '正在更新候选列表...');
+  await reportGenerationProgress(progress, '正在更新候选列表...', generationRequestId);
 
   if (!shouldContinueGenerationRequest(generationRequestId, '候选列表更新')) {
     return {
@@ -361,7 +373,7 @@ async function runGenerationFlow(
 }
 
 /**
- * 开始一次生成请求，并清空上一轮候选状态。
+ * 开始一次生成请求，清空上一轮候选内容并显示首个生成阶段。
  */
 function beginGenerationRequest(): number {
   activeGenerationRequestId += 1;
@@ -369,7 +381,7 @@ function beginGenerationRequest(): number {
   const previousSession = candidateSession;
 
   candidateSession = undefined;
-  candidateViewProvider?.clearCandidates();
+  candidateViewProvider?.showGenerationStatus('正在检查仓库状态...');
   clearCommitInputBoxIfMatchesPreviousCandidate(previousSession);
 
   info(`生成请求已开始，候选状态已清空。请求：${generationRequestId}`);
@@ -406,22 +418,29 @@ async function applyCandidate(candidateIndex: number): Promise<void> {
     return;
   }
 
-  const candidate = candidateSession.candidates[candidateIndex];
+  const selectedSession = candidateSession;
+  const candidate = selectedSession.candidates[candidateIndex];
 
   if (!candidate) {
     warn(`用户点击了不存在的候选索引：${candidateIndex}`);
     return;
   }
 
-  const fullMessage = formatCommitMessage(candidate, candidateSession.includeExtendedDescription);
+  const fullMessage = formatCommitMessage(candidate, selectedSession.includeExtendedDescription);
   infoObject('用户选择的候选项', {
     index: candidateIndex,
     title: candidate.title,
     description: candidate.description,
     finalMessage: fullMessage
   });
-  await writeCommitMessageToInputBox(candidateSession.repository, fullMessage);
-  candidateViewProvider?.setSelectedCandidate(candidateIndex);
+  await writeCommitMessageToInputBox(selectedSession.repository, fullMessage);
+
+  if (candidateSession !== selectedSession) {
+    info('候选批次已更新，跳过过期候选的已使用状态和成功提示。');
+    return;
+  }
+
+  candidateViewProvider?.markCurrentBatchUsed();
   await showLoggedInformationMessage(t('已写入 Commit Message 输入框。'));
 }
 
@@ -501,8 +520,13 @@ async function handleInitialCommitScenario(repository: Repository, generationReq
     return false;
   }
 
-  candidateViewProvider?.setSelectedCandidate(0);
   await writeCommitMessageToInputBox(repository, INITIAL_COMMIT_MESSAGE);
+
+  if (!shouldContinueGenerationRequest(generationRequestId, '首次提交输入框写入')) {
+    return false;
+  }
+
+  candidateViewProvider?.markCurrentBatchUsed();
 
   return true;
 }
@@ -598,18 +622,22 @@ async function showLoggedInformationMessage(message: string, ...actions: string[
  * 这样可以保证“正在收集 Git 差异...”只覆盖真实工作阶段，不会和后续提示互相叠住。
  */
 async function showPostProgressNotification(notification: PostProgressNotification): Promise<void> {
-  infoObject('进度结束后的提示', notification, { compact: true });
+  const message = t(notification.message);
+  infoObject('进度结束后的提示', {
+    ...notification,
+    message
+  }, { compact: true });
 
   if (notification.level === 'error') {
     if (notification.revealLogger) {
       showLogger(false);
     }
 
-    await showLoggedErrorMessage(notification.message);
+    await showLoggedErrorMessage(message);
     return;
   }
 
-  await showLoggedInformationMessage(notification.message);
+  await showLoggedInformationMessage(message);
 }
 
 /**

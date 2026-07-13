@@ -12,13 +12,26 @@ body {
   padding: 10px;
 }
 
-.empty-state {
+.status-message {
   padding: 12px;
   line-height: 1.6;
   border: 1px solid var(--vscode-editorWidget-border);
   border-radius: 8px;
   background: var(--vscode-editorWidget-background);
   white-space: pre-wrap;
+}
+
+.status-generating {
+  color: var(--vscode-descriptionForeground);
+}
+
+.status-notice {
+  color: var(--vscode-descriptionForeground);
+}
+
+.status-error {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-editorWidget-border));
+  color: var(--vscode-errorForeground);
 }
 
 .candidate-list {
@@ -35,10 +48,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.candidate-card.selected {
-  border-color: var(--vscode-textLink-foreground);
 }
 
 .section-label {
@@ -85,4 +94,25 @@ body {
 
 .apply-button:hover {
   background: var(--vscode-button-hoverBackground);
+}
+
+.candidate-list.batch-used .candidate-card {
+  border-color: var(--vscode-disabledForeground);
+  color: var(--vscode-disabledForeground);
+  opacity: 0.64;
+}
+
+.candidate-list.batch-used .section-label,
+.candidate-list.batch-used .candidate-content {
+  color: var(--vscode-disabledForeground);
+}
+
+.candidate-list.batch-used .apply-button {
+  border-color: var(--vscode-disabledForeground);
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-disabledForeground);
+}
+
+.candidate-list.batch-used .apply-button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
 }
