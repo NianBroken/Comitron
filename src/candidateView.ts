@@ -8,6 +8,7 @@ import {
   markCandidateBatchUsed,
   type CandidateViewState
 } from './candidateViewState';
+import { renderCandidateViewBody } from './candidateViewMarkup';
 import { getCurrentLanguage, t } from './i18n';
 import type { CommitMessageCandidate } from './toolRunner';
 
@@ -44,7 +45,10 @@ export class CandidateViewProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.onDidReceiveMessage(async (message: { type?: string; candidateIndex?: number }) => {
-      if (message.type !== 'applyCandidate' || typeof message.candidateIndex !== 'number') {
+      if (message.type !== 'applyCandidate'
+        || typeof message.candidateIndex !== 'number'
+        || !Number.isInteger(message.candidateIndex)
+        || message.candidateIndex < 0) {
         return;
       }
 
@@ -99,10 +103,10 @@ export class CandidateViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * 标记当前候选批次已经被使用。
-   * 整批候选会统一变为灰暗样式，但保留再次写入输入框的能力。
+   * 整批候选会统一弱化，最后使用的候选会保留独立的视觉标识。
    */
-  markCurrentBatchUsed(): void {
-    this.state = markCandidateBatchUsed(this.state);
+  markCurrentBatchUsed(candidateIndex: number): void {
+    this.state = markCandidateBatchUsed(this.state, candidateIndex);
 
     this.render();
   }
@@ -138,7 +142,7 @@ function getHtml(
 ): string {
   const nonce = getNonce();
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'view.css'));
-  const script = getInlineScript(state);
+  const body = renderCandidateViewBody(state, t);
   const title = t('Commit 候选项');
   const language = getCurrentLanguage();
 
@@ -152,7 +156,7 @@ function getHtml(
   <title>${title}</title>
 </head>
 <body>
-  ${script.body}
+  ${body}
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     document.querySelectorAll('[data-candidate-index]').forEach((button) => {
@@ -160,7 +164,7 @@ function getHtml(
         const rawIndex = button.getAttribute('data-candidate-index');
         const candidateIndex = Number(rawIndex);
 
-        if (Number.isNaN(candidateIndex)) {
+        if (!Number.isInteger(candidateIndex) || candidateIndex < 0) {
           return;
         }
 
@@ -173,64 +177,6 @@ function getHtml(
   </script>
 </body>
 </html>`;
-}
-
-/**
- * 根据当前状态拼装候选面板主体内容。
- * 无候选项时按状态显示提示，有候选项时按卡片形式逐条渲染。
- */
-function getInlineScript(state: CandidateViewState): { body: string } {
-  if (state.candidates.length === 0) {
-    const status = state.status ?? createInitialCandidateViewState().status;
-
-    if (!status) {
-      return {
-        body: ''
-      };
-    }
-
-    return {
-      body: `<div class="status-message status-${status.kind}" role="status" aria-live="polite">${escapeHtml(t(status.message))}</div>`
-    };
-  }
-
-  const candidateCards = state.candidates.map((candidate, index) => {
-    const descriptionBlock = state.includeExtendedDescription && candidate.description
-      ? `
-        <div class="section-label">${t('Commit 描述')}</div>
-        <div class="candidate-content">${escapeHtml(candidate.description)}</div>
-      `
-      : '';
-
-    return `
-      <section class="candidate-card">
-        <div class="section-header">
-          <div class="section-label">${t('Commit 标题')}</div>
-          <button class="apply-button" data-candidate-index="${index}">${t('使用这条')}</button>
-        </div>
-        <div class="candidate-content">${escapeHtml(candidate.title)}</div>
-        ${descriptionBlock}
-      </section>
-    `;
-  }).join('');
-
-  return {
-    body: `<main class="candidate-list${state.batchUsed ? ' batch-used' : ''}">${candidateCards}</main>`
-  };
-}
-
-/**
- * 转义 HTML 特殊字符，并把换行转换成 <br />。
- * 这样标题和描述既能安全显示，也能保留原本的换行结构。
- */
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('\'', '&#39;')
-    .replaceAll('\n', '<br />');
 }
 
 /**

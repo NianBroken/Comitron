@@ -440,7 +440,7 @@ async function applyCandidate(candidateIndex: number): Promise<void> {
     return;
   }
 
-  candidateViewProvider?.markCurrentBatchUsed();
+  candidateViewProvider?.markCurrentBatchUsed(candidateIndex);
   await showLoggedInformationMessage(t('已写入 Commit Message 输入框。'));
 }
 
@@ -526,7 +526,7 @@ async function handleInitialCommitScenario(repository: Repository, generationReq
     return false;
   }
 
-  candidateViewProvider?.markCurrentBatchUsed();
+  candidateViewProvider?.markCurrentBatchUsed(0);
 
   return true;
 }

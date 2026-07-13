@@ -23,11 +23,13 @@ export interface CandidateViewStatus {
 /**
  * 候选面板的完整运行时状态。
  * batchUsed 表示当前这一批候选中至少有一条已经写入 Commit 输入框。
+ * lastUsedCandidateIndex 保存当前批次最后一次成功写入输入框的候选索引。
  */
 export interface CandidateViewState {
   candidates: readonly CommitMessageCandidate[];
   includeExtendedDescription: boolean;
   batchUsed: boolean;
+  lastUsedCandidateIndex: number | undefined;
   status: CandidateViewStatus | undefined;
 }
 
@@ -71,6 +73,7 @@ export function createCandidateBatchViewState(
     candidates,
     includeExtendedDescription,
     batchUsed: false,
+    lastUsedCandidateIndex: undefined,
     status: undefined
   };
 }
@@ -78,11 +81,20 @@ export function createCandidateBatchViewState(
 /**
  * 标记当前候选批次已经被使用。
  * 这个标记只影响整批候选的视觉样式，不会阻止再次写入候选内容。
+ * 每次成功选择都会覆盖最后使用索引，确保视觉标识始终指向最近一次写入。
  */
-export function markCandidateBatchUsed(state: CandidateViewState): CandidateViewState {
+export function markCandidateBatchUsed(
+  state: CandidateViewState,
+  candidateIndex: number
+): CandidateViewState {
+  if (!Number.isInteger(candidateIndex) || candidateIndex < 0 || candidateIndex >= state.candidates.length) {
+    return state;
+  }
+
   return {
     ...state,
-    batchUsed: true
+    batchUsed: true,
+    lastUsedCandidateIndex: candidateIndex
   };
 }
 
@@ -97,6 +109,7 @@ function createStatusCandidateViewState(
     candidates: [],
     includeExtendedDescription: false,
     batchUsed: false,
+    lastUsedCandidateIndex: undefined,
     status: {
       kind,
       message

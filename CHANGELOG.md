@@ -1,5 +1,11 @@
 # 更改日志
 
+## [1.0.10] - 2026-07-13
+
+- 新增 `lastUsedCandidateIndex` 状态字段，记录批次中最后被选中的候选索引
+- 在候选卡片上通过 CSS 伪元素显示绿色圆点与对勾标记，区分已使用批次中的最后选中项
+- 将候选面板渲染逻辑抽离至独立模块 `candidateViewMarkup.ts`，降低 `candidateView.ts` 的耦合度
+
 ## [1.0.9] - 2026-07-13
 
 - 新增 `candidateViewState.ts`，定义候选面板的完整运行时状态类型及工厂函数

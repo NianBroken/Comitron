@@ -96,23 +96,57 @@ body {
   background: var(--vscode-button-hoverBackground);
 }
 
+.apply-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
 .candidate-list.batch-used .candidate-card {
   border-color: var(--vscode-disabledForeground);
-  color: var(--vscode-disabledForeground);
-  opacity: 0.64;
+  background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background));
 }
 
 .candidate-list.batch-used .section-label,
 .candidate-list.batch-used .candidate-content {
-  color: var(--vscode-disabledForeground);
+  color: var(--vscode-descriptionForeground);
 }
 
 .candidate-list.batch-used .apply-button {
-  border-color: var(--vscode-disabledForeground);
-  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-  color: var(--vscode-disabledForeground);
+  border-color: var(--vscode-button-secondaryBorder, var(--vscode-button-border, transparent));
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
 }
 
 .candidate-list.batch-used .apply-button:hover {
-  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+}
+
+.candidate-list.batch-used .candidate-card.candidate-last-used {
+  position: relative;
+}
+
+.candidate-list.batch-used .candidate-card.candidate-last-used::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  background: var(--vscode-testing-iconPassed, #73c991);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.candidate-list.batch-used .candidate-card.candidate-last-used::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -2px;
+  width: 7px;
+  height: 4px;
+  border-bottom: 2px solid var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-left: 2px solid var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  transform: rotate(-45deg);
+  pointer-events: none;
 }
